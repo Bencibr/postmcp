@@ -28,7 +28,7 @@ Environment variables are stored inside the database per environment. You can dy
 ### 3. Context Window Protection (Response Selection)
 LLM context windows are valuable. Large JSON responses can bloat your memory.
 - **Best Practice**: If you only need a specific field, use the `jsonpathFilter` parameter (e.g. `$.data.items[0].id`). The HTTP tool will filter the response using JSONPath before returning it to you.
-- Large responses are truncated automatically at 15,000 characters by default. Note that this truncation only applies to the text body returned to you in your chat window; internal **variable extraction** (via `extractVariables` in `test_run_suite`) and the **assertion engine** will automatically evaluate against the full, un-truncated response payload.
+- Large responses are truncated automatically at 15,000 characters by default. Note that both filtering and truncation only apply to the final text body returned to you in your chat window (and logged in history); the internal **variable extraction** (via `extractVariables` in `test_run_suite`) and the **assertion engine** will automatically evaluate against the original, full, unfiltered, and un-truncated response payload.
 
 ### 4. Safe Domain Allowlists
 Outgoing requests are constrained by a safe host allowlist to prevent SSRF or unauthorized external calls.
@@ -118,7 +118,7 @@ Outgoing requests are constrained by a safe host allowlist to prevent SSRF or un
   * `body` (string, optional): Request payload (raw string or stringified JSON).
   * `bodyType` (string, default: `json`): `json`, `urlencoded`, `form-data`, `raw`.
   * `timeout` (number, optional): Request timeout in milliseconds.
-  * `jsonpathFilter` (string, optional): Filter response body before returning to AI (e.g. `$.data.id`).
+  * `jsonpathFilter` (string, optional): Filter response body before returning to AI (e.g. `$.data.id`). Note: assertions and variable extractions still evaluate against the original full response.
   * `assertions` (array of objects, optional): Validation checks.
     * Each assertion contains:
       * `type` (string, required): `status`, `header`, `body`, `responseTime`.
