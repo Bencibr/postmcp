@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+jspm_packages/
+web_modules/
+
+# Build outputs
+dist/
+out/
+lib/
+*.tsbuildinfo
+
+# Test files & temporary databases
+src/test/temp_*
+src/test/*.db
+*.log
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
+.idea/
+.project
+.settings/
