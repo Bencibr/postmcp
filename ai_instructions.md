@@ -81,3 +81,7 @@ All HTTP requests are logged automatically.
 
 - Sensitive headers (`Authorization`, `Cookie`, `x-api-key`) and request bodies containing passwords or secrets are **automatically redacted** inside the SQLite history logs. You do not need to mask them manually.
 - All requests check a global host allowlist. If you encounter an "Access Denied" error, adjust allowlists using `env_set_allowlist`.
+
+### E. Database Maintenance (`db_*`)
+- **`db_status`**: Get database stats, file size (in KB), database absolute path, and row counts of all tables.
+- **`db_reset`**: **DANGER**: Perform a factory reset. This closes the database connection, deletes the database file, and re-initializes a fresh schema with a `DefaultProject` and `default` environment.

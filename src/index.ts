@@ -386,6 +386,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ['suiteName', 'steps']
         }
+      },
+      // --- DATABASE MAINTENANCE ---
+      {
+        name: 'db_status',
+        description: 'Get statistics about the local SQLite database, including database file path, file size, and row counts of all tables.',
+        inputSchema: {
+          type: 'object'
+        }
+      },
+      {
+        name: 'db_reset',
+        description: 'DANGER: Factory reset the SQLite database. Closes database, deletes the database file, and recreates a fresh blank schema with a DefaultProject.',
+        inputSchema: {
+          type: 'object'
+        }
       }
     ]
   };
@@ -839,6 +854,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const mdReport = TestReporter.generateMarkdown(suiteResult);
         return {
           content: [{ type: 'text', text: mdReport }]
+        };
+      }
+
+      case 'db_status': {
+        const stats = await dbManager.getDatabaseStats();
+        const kbSize = (stats.fileSize / 1024).toFixed(2);
+        
+        let md = `## 📊 Database Status Statistics\n\n`;
+        md += `- **Database Path**: \`${stats.filePath}\`\n`;
+        md += `- **File Size**: \`${kbSize} KB\` (\`${stats.fileSize} bytes\`)\n\n`;
+        md += `### 📋 Table Record Counts\n\n`;
+        md += `| Table | Records Count |\n`;
+        md += `| :--- | :--- |\n`;
+        md += `| **Projects** | \`${stats.projectsCount}\` |\n`;
+        md += `| **Environments** | \`${stats.environmentsCount}\` |\n`;
+        md += `| **Request Logs (History)** | \`${stats.historyCount}\` |\n`;
+        md += `| **OAuth2 Token Cache** | \`${stats.authCacheCount}\` |\n`;
+
+        return {
+          content: [{ type: 'text', text: md }]
+        };
+      }
+
+      case 'db_reset': {
+        await dbManager.resetDatabase();
+        return {
+          content: [{ type: 'text', text: '✅ Database has been successfully reset. Deleted all data, re-created tables, and initialized default settings.' }]
         };
       }
 

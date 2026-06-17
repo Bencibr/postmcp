@@ -537,4 +537,37 @@ export class DbManager {
   async clearCachedToken(envId: number): Promise<void> {
     await this.run('DELETE FROM auth_cache WHERE environmentId = ?', [envId]);
   }
+
+  // --- DATABASE MAINTENANCE ---
+  async getDatabaseStats(): Promise<{
+    filePath: string;
+    fileSize: number;
+    projectsCount: number;
+    environmentsCount: number;
+    historyCount: number;
+    authCacheCount: number;
+  }> {
+    const stat = await fs.stat(this.dbPath);
+    
+    const projCountRow = await this.get<{ 'COUNT(*)': number }>('SELECT COUNT(*) FROM projects');
+    const envCountRow = await this.get<{ 'COUNT(*)': number }>('SELECT COUNT(*) FROM environments');
+    const histCountRow = await this.get<{ 'COUNT(*)': number }>('SELECT COUNT(*) FROM history');
+    const cacheCountRow = await this.get<{ 'COUNT(*)': number }>('SELECT COUNT(*) FROM auth_cache');
+
+    return {
+      filePath: this.dbPath,
+      fileSize: stat.size,
+      projectsCount: projCountRow ? projCountRow['COUNT(*)'] : 0,
+      environmentsCount: envCountRow ? envCountRow['COUNT(*)'] : 0,
+      historyCount: histCountRow ? histCountRow['COUNT(*)'] : 0,
+      authCacheCount: cacheCountRow ? cacheCountRow['COUNT(*)'] : 0
+    };
+  }
+
+  async resetDatabase(): Promise<void> {
+    await this.close();
+    await fs.unlink(this.dbPath);
+    await this.initialize();
+  }
 }
+

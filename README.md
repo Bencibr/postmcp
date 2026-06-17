@@ -54,6 +54,7 @@ Add this configuration to your Claude Desktop config (usually at `~/Library/Appl
 4. **HTTP Requests**: `http_request` (REST requests with assertions), `test_run_suite` (sequential scenario runner).
 5. **WebSocket Client (`ws_*`)**: `ws_connect`, `ws_send`, `ws_read` (regex waiting support), `ws_close`, `ws_list`.
 6. **Request History (`history_*`)**: `history_list` (query audits), `history_get` (detail log), `history_compare` (diff logs), `history_clear`.
+7. **Database Maintenance (`db_*`)**: `db_status` (returns database file path, file size in KB, and table row counts), `db_reset` (factory reset DB).
 
 ### 🧪 Integration Tests
 
@@ -135,6 +136,9 @@ npx tsx src/test/runTests.ts
    - `history_get`：根据 ID 检索单次请求响应的详细报文。
    - `history_compare`：对两个历史请求进行多维度比对，生成包含状态码、响应时间以及 JSON 结构体变化（新增、变更、删除）的 Markdown 差异表格。
    - `history_clear`：清理历史审计记录。
+7. **数据库维护 (`db_*`)**：
+   - `db_status`：查询本地 SQLite 数据库的文件路径、大小（KB）及各个表的数据量。
+   - `db_reset`：**危险操作**：清空并重置数据库，重新初始化默认项目和环境。
 
 ### 🧪 本地集成测试
 

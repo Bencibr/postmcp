@@ -185,6 +185,18 @@ async function runTests() {
     await wsManager.close(wsConn.connectionId);
     assert(wsManager.listConnections().length === 0, 'WebSocket closed cleanly');
 
+    // 9. Test Database Maintenance
+    console.log('\n--- Test 9: Database Stats & Reset ---');
+    const stats = await dbManager.getDatabaseStats();
+    assert(stats.projectsCount === 2, `Stats projects count: ${stats.projectsCount}`);
+    assert(stats.fileSize > 0, `Database file size is valid: ${stats.fileSize} bytes`);
+
+    await dbManager.resetDatabase();
+    const newStats = await dbManager.getDatabaseStats();
+    assert(newStats.projectsCount === 1, `Factory reset succeeded. Projects count reset to: ${newStats.projectsCount}`);
+    const activeInfo = await dbManager.getActiveProjectAndEnv();
+    assert(activeInfo.projectName === 'DefaultProject', 'Default project re-seeded successfully after reset');
+
   } catch (err: any) {
     console.error(`\n❌ CRITICAL EXCEPTION during integration tests: ${err.message}`);
     console.error(err.stack);

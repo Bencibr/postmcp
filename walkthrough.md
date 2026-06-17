@@ -74,6 +74,10 @@ Initiates websocket connects, sends raw text/JSON messages, and polls buffered q
 - **`history_compare`**: Computes diffs between two requests.
   - Parameters: `id1`, `id2`
 
+### 7. Database Maintenance (`db_*`)
+- **`db_status`**: Get database file path, file size in KB, and table counts.
+- **`db_reset`**: **DANGER**: Perform a factory reset. This closes the database, unlinks the file, and re-initializes a fresh database schema.
+
 #### Example Comparison Diff Output
 ```markdown
 ## 🔍 Request History Comparison (ID: 1 vs ID: 2)
