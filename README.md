@@ -1,4 +1,4 @@
-# postmcp 🚀
+# postmcp 🚀 - API Request & Automation Testing MCP Server
 
 [English](#english) | [中文说明](#中文说明)
 
