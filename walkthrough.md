@@ -27,7 +27,10 @@ The database uses 5 interconnected tables:
 
 ## 📖 MCP Tool API Guide
 
-### 1. Project Management (`project_*`)
+### 1. Help Guide
+- **`mcp_usage_guide`**: Retrieve workflow guidelines on variables, chaining, and socket testing dynamically.
+
+### 2. Project Management (`project_*`)
 - **`project_create`**: Initialize a new project. Automatically creates a default environment for it.
   - Parameters: `name` (required), `description`
 - **`project_switch`**: Switch active workspace.
@@ -36,7 +39,7 @@ The database uses 5 interconnected tables:
 - **`project_delete`**: Delete a project (cascades and deletes its environments, credentials, and test history).
   - Parameters: `projectId`
 
-### 2. Environment Profile Management (`env_*`)
+### 3. Environment Profile Management (`env_*`)
 - **`env_configure`**: Configure settings inside the active project.
   - Parameters: `name` (dev/prod), `baseUrl`, `headers`, `cookies`, `variables`, `authType` (none/bearer/apiKey/oauth2), `authToken`, `apiKeyHeaderName`, `oauth2Config`.
 - **`env_switch`**: Switch active environment.
@@ -47,7 +50,7 @@ The database uses 5 interconnected tables:
 - **`env_set_variable`**: Store variable key-value inside the active environment configuration (resolvable in requests via `{{variableName}}` syntax).
   - Parameters: `key`, `value`
 
-### 3. HTTP Request (`http_request`)
+### 4. HTTP Request (`http_request`)
 Sends a request, evaluates assertions, filters outputs, and audits details into `history`.
 ```json
 {
@@ -59,11 +62,11 @@ Sends a request, evaluates assertions, filters outputs, and audits details into 
 }
 ```
 
-### 4. WebSocket Testing (`ws_*`)
+### 5. WebSocket Testing (`ws_*`)
 Initiates websocket connects, sends raw text/JSON messages, and polls buffered queues.
 - `ws_connect`, `ws_send`, `ws_read` (supports wait regex), `ws_close`, `ws_list`.
 
-### 5. History and Comparison (`history_*`)
+### 6. History and Comparison (`history_*`)
 - **`history_list`**: Lists request execution logs.
   - Parameters: `limit`, `offset`, `environmentId` (optional)
 - **`history_get`**: Fetch details of a specific request audit log by ID (shows headers, body sent, response body).

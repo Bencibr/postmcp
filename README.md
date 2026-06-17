@@ -48,11 +48,12 @@ Add this configuration to your Claude Desktop config (usually at `~/Library/Appl
 
 ### 📖 MCP Tool Guide
 
-1. **Projects (`project_*`)**: `project_create`, `project_switch`, `project_list`, `project_delete`.
-2. **Environments (`env_*`)**: `env_configure`, `env_switch`, `env_list`, `env_delete`, `env_set_variable`, `env_set_allowlist`.
-3. **HTTP Requests**: `http_request` (REST requests with assertions), `test_run_suite` (sequential scenario runner).
-4. **WebSocket Client (`ws_*`)**: `ws_connect`, `ws_send`, `ws_read` (regex waiting support), `ws_close`, `ws_list`.
-5. **Request History (`history_*`)**: `history_list` (query audits), `history_get` (detail log), `history_compare` (diff logs), `history_clear`.
+1. **Guide & Instructions**: `mcp_usage_guide` (dynamically returns workflow guidelines on variables, chaining, and socket testing).
+2. **Projects (`project_*`)**: `project_create`, `project_switch`, `project_list`, `project_delete`.
+3. **Environments (`env_*`)**: `env_configure`, `env_switch`, `env_list`, `env_delete`, `env_set_variable`, `env_set_allowlist`.
+4. **HTTP Requests**: `http_request` (REST requests with assertions), `test_run_suite` (sequential scenario runner).
+5. **WebSocket Client (`ws_*`)**: `ws_connect`, `ws_send`, `ws_read` (regex waiting support), `ws_close`, `ws_list`.
+6. **Request History (`history_*`)**: `history_list` (query audits), `history_get` (detail log), `history_compare` (diff logs), `history_clear`.
 
 ### 🧪 Integration Tests
 
@@ -106,28 +107,30 @@ npx tsx src/test/runTests.ts
 
 ### 📖 MCP 工具接口使用指南
 
-1. **项目管理 (`project_*`)**：
+1. **帮助与指南 (`mcp_usage_guide`)**：
+   - `mcp_usage_guide`：让 AI 助手直接获取关于变量插值、串联测试、WebSocket 异步监听等的高级使用说明。
+2. **项目管理 (`project_*`)**：
    - `project_create`：创建一个新的项目测试空间。
    - `project_switch`：切换当前活动的项目空间。
    - `project_list`：列出所有项目。
    - `project_delete`：删除指定项目（级联删除关联的环境及历史记录）。
-2. **环境配置 (`env_*`)**：
+3. **环境配置 (`env_*`)**：
    - `env_configure`：在活动项目下创建或修改环境（如 dev 或 prod，可配置 Base URL、账号凭证等）。
    - `env_switch`：切换活动环境。
    - `env_list`：列出当前项目下的环境列表（敏感 Token 会自动脱敏遮蔽）。
    - `env_delete`：删除环境配置文件。
    - `env_set_variable`：往当前活动环境写入自定义变量，在请求中通过 `{{variableName}}` 引用。
    - `env_set_allowlist`：设置安全出站域名白名单。
-3. **HTTP 接口请求**：
+4. **HTTP 接口请求**：
    - `http_request`：发送单次 API 请求，包含 Headers 自动构建、断言以及数据库审计。
    - `test_run_suite`：执行串联式多步 API 测试场景，支持变量提取与传递。
-4. **WebSocket 客户端 (`ws_*`)**：
+5. **WebSocket 客户端 (`ws_*`)**：
    - `ws_connect`：发起 WebSocket 连接，维持长连接状态。
    - `ws_send`：发送文本或 JSON 数据帧。
    - `ws_read`：读取已收到的消息缓存，支持传入 `waitForPattern` 正则阻塞等待响应。
    - `ws_close`：关闭 WebSocket 连接。
    - `ws_list`：列出当前所有活跃的 socket 连接 ID。
-5. **历史日志与响应对比 (`history_*`)**：
+6. **历史日志与响应对比 (`history_*`)**：
    - `history_list`：分页查询存储在 SQLite 中的历史发包审计记录。
    - `history_get`：根据 ID 检索单次请求响应的详细报文。
    - `history_compare`：对两个历史请求进行多维度比对，生成包含状态码、响应时间以及 JSON 结构体变化（新增、变更、删除）的 Markdown 差异表格。
