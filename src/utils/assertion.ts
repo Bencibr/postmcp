@@ -70,12 +70,12 @@ export class AssertionEngine {
 
           case 'body':
             const jsonPath = assertion.property || '$';
-            let parsedBody = response.body;
+            let parsedBody = response.fullBody !== undefined ? response.fullBody : response.body;
 
             // Attempt parsing if string
-            if (typeof response.body === 'string') {
+            if (typeof parsedBody === 'string') {
               try {
-                parsedBody = JSON.parse(response.body);
+                parsedBody = JSON.parse(parsedBody);
               } catch {
                 // Not JSON, treat as raw body if checking simple string
               }

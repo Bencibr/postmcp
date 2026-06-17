@@ -819,9 +819,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
             // Extract variables and update environment database variables record
             if (extractVariables && Object.keys(extractVariables).length > 0) {
-              let parsedBody = response.body;
-              if (typeof response.body === 'string') {
-                try { parsedBody = JSON.parse(response.body); } catch {}
+              let parsedBody = response.fullBody !== undefined ? response.fullBody : response.body;
+              if (typeof parsedBody === 'string') {
+                try { parsedBody = JSON.parse(parsedBody); } catch {}
               }
 
               for (const [varName, pathExpr] of Object.entries(extractVariables)) {

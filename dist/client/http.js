@@ -253,6 +253,7 @@ export class HttpClient {
             statusText: response.statusText,
             headers: responseHeaders,
             body: responseBody,
+            fullBody: response.data,
             durationMs,
             isTruncated,
             originalSize

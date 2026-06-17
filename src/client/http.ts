@@ -20,6 +20,7 @@ export interface HttpResponseData {
   statusText: string;
   headers: Record<string, string>;
   body: any;
+  fullBody?: any;
   durationMs: number;
   isTruncated: boolean;
   originalSize: number;
@@ -294,6 +295,7 @@ export class HttpClient {
       statusText: response.statusText,
       headers: responseHeaders,
       body: responseBody,
+      fullBody: response.data,
       durationMs,
       isTruncated,
       originalSize
