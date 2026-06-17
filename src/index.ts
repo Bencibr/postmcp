@@ -8,6 +8,10 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 
+import { fileURLToPath } from 'url';
+import path from 'path';
+import fs from 'fs/promises';
+
 import { DbManager, EnvironmentRecord, ProjectRecord } from './db/sqlite.js';
 import { HttpClient } from './client/http.js';
 import { WebSocketManager } from './client/ws.js';
@@ -15,6 +19,10 @@ import { AssertionEngine, Assertion } from './utils/assertion.js';
 import { TestReporter, TestSuiteResult, TestStepResult } from './utils/reporter.js';
 import { DiffEngine } from './utils/diff.js';
 import jp from 'jsonpath';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const INSTRUCTIONS_PATH = path.join(__dirname, '..', 'ai_instructions.md');
 
 // 1. Initialize core managers
 const dbManager = new DbManager();
@@ -56,6 +64,13 @@ function redactEnvironment(env: any) {
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
+      {
+        name: 'mcp_usage_guide',
+        description: 'Read the instructions and workflow guidelines for LLM agents to use this MCP server effectively (explains variables, interpolation, chaining, and websockets).',
+        inputSchema: {
+          type: 'object'
+        }
+      },
       // --- PROJECT MANAGEMENT ---
       {
         name: 'project_create',
@@ -403,6 +418,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
+      case 'mcp_usage_guide': {
+        let contentText = '';
+        try {
+          contentText = await fs.readFile(INSTRUCTIONS_PATH, 'utf8');
+        } catch {
+          contentText = `# AI Agent Guide: How to Use \`postmcp\`\n\n` +
+            `This server is a local database-backed testing client designed for automated RESTful API and WebSocket endpoint verification.\n\n` +
+            `- **Projects**: Use \`project_list\`, \`project_create\`, and \`project_switch\` to separate environments.\n` +
+            `- **Environments**: Use \`env_configure\` and \`env_switch\` to configure baseUrl and credentials.\n` +
+            `- **Variables**: Save variables with \`env_set_variable\`, then interpolate in requests via \`{{var_name}}\`.\n` +
+            `- **Chaining tests**: Use \`test_run_suite\` to execute multiple steps sequentially and pass variables (via \`extractVariables\`) to subsequent steps.\n` +
+            `- **WebSocket**: Connect with \`ws_connect\`, write messages with \`ws_send\`, and read with \`ws_read\` (pass \`waitForPattern\` regex to block/wait).\n` +
+            `- **History**: Use \`history_list\` and \`history_compare\` to see JSON-diff response changes.`;
+        }
+        return {
+          content: [{ type: 'text', text: contentText }]
+        };
+      }
       // --- PROJECTS ---
       case 'project_create': {
         const { name, description } = args as any;
