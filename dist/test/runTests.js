@@ -5,6 +5,7 @@ import { DbManager } from '../db/sqlite.js';
 import { HttpClient } from '../client/http.js';
 import { WebSocketManager } from '../client/ws.js';
 import { DiffEngine } from '../utils/diff.js';
+import { SwaggerParser } from '../utils/swagger.js';
 function interpolate(target, variables) {
     if (typeof target === 'string') {
         return target.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
@@ -148,6 +149,31 @@ async function runTests() {
         assert(wsLogs.some(m => m.data === 'echo: hello socket'), 'WebSocket read correctly matches echo message');
         await wsManager.close(wsConn.connectionId);
         assert(wsManager.listConnections().length === 0, 'WebSocket closed cleanly');
+        // 9. Test Database Maintenance
+        console.log('\n--- Test 9: Database Stats & Reset ---');
+        const stats = await dbManager.getDatabaseStats();
+        assert(stats.projectsCount === 2, `Stats projects count: ${stats.projectsCount}`);
+        assert(stats.fileSize > 0, `Database file size is valid: ${stats.fileSize} bytes`);
+        await dbManager.resetDatabase();
+        const newStats = await dbManager.getDatabaseStats();
+        assert(newStats.projectsCount === 1, `Factory reset succeeded. Projects count reset to: ${newStats.projectsCount}`);
+        const activeInfo = await dbManager.getActiveProjectAndEnv();
+        assert(activeInfo.projectName === 'DefaultProject', 'Default project re-seeded successfully after reset');
+        // 10. Test Swagger Import (JSON & YAML, File & URL)
+        console.log('\n--- Test 10: Swagger / OpenAPI Import ---');
+        const swaggerParser = new SwaggerParser(dbManager);
+        // Test Local YAML import
+        const yamlPath = path.join(process.cwd(), 'src', 'test', 'mockSwagger.yaml');
+        const yamlDoc = await swaggerParser.importSpec({ filePath: yamlPath });
+        assert(yamlDoc.includes('Mock User API') && yamlDoc.includes('GET') && yamlDoc.includes('/users'), 'Local YAML Swagger spec parsed successfully');
+        // Test Local JSON import
+        const jsonPath = path.join(process.cwd(), 'src', 'test', 'mockSwagger.json');
+        const jsonDoc = await swaggerParser.importSpec({ filePath: jsonPath });
+        assert(jsonDoc.includes('Mock User API Legacy') && jsonDoc.includes('Retrieve all users legacy'), 'Local JSON Swagger spec parsed successfully');
+        // Test Remote JSON import via URL
+        const remoteUrl = `http://localhost:${port}/swagger.json`;
+        const remoteDoc = await swaggerParser.importSpec({ url: remoteUrl });
+        assert(remoteDoc.includes('Mock Remote API') && remoteDoc.includes('Retrieve all users remotely'), 'Remote URL JSON Swagger spec parsed successfully');
     }
     catch (err) {
         console.error(`\n❌ CRITICAL EXCEPTION during integration tests: ${err.message}`);

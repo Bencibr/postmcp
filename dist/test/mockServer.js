@@ -22,6 +22,17 @@ export class MockServer {
             res.end();
             return;
         }
+        if (method === 'GET' && url.pathname === '/swagger.json') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                swagger: "2.0",
+                info: { title: "Mock Remote API", version: "1.0.0" },
+                host: `localhost:${this.port}`,
+                basePath: "/api",
+                paths: { "/users": { "get": { "summary": "Retrieve all users remotely" } } }
+            }));
+            return;
+        }
         if (method === 'GET' && url.pathname === '/api/users/1') {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ id: 1, name: 'Alice', role: 'admin' }));

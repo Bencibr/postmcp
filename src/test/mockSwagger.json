@@ -1,0 +1,28 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "Mock User API Legacy",
+    "version": "1.0.1",
+    "description": "Legacy Swagger spec."
+  },
+  "host": "localhost:8089",
+  "basePath": "/api",
+  "schemes": [
+    "http"
+  ],
+  "paths": {
+    "/users": {
+      "get": {
+        "summary": "Retrieve all users legacy",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "type": "integer"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,45 @@
+openapi: 3.0.0
+info:
+  title: Mock User API
+  version: 1.2.3
+  description: A mock server specification for testing Swagger imports.
+servers:
+  - url: http://localhost:8089/api
+paths:
+  /users:
+    get:
+      summary: Retrieve all users
+      description: Returns a list of users in the system.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: A list of users
+    post:
+      summary: Create a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/User'
+      responses:
+        '201':
+          description: User created
+components:
+  schemas:
+    User:
+      type: object
+      required:
+        - username
+      properties:
+        username:
+          type: string
+          example: admin
+        role:
+          type: string
+          example: manager

@@ -2,17 +2,25 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, } from '@modelcontextprotocol/sdk/types.js';
+import { fileURLToPath } from 'url';
+import path from 'path';
+import fs from 'fs/promises';
 import { DbManager } from './db/sqlite.js';
 import { HttpClient } from './client/http.js';
 import { WebSocketManager } from './client/ws.js';
 import { AssertionEngine } from './utils/assertion.js';
 import { TestReporter } from './utils/reporter.js';
 import { DiffEngine } from './utils/diff.js';
+import { SwaggerParser } from './utils/swagger.js';
 import jp from 'jsonpath';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const INSTRUCTIONS_PATH = path.join(__dirname, '..', 'ai_instructions.md');
 // 1. Initialize core managers
 const dbManager = new DbManager();
 const httpClient = new HttpClient(dbManager);
 const wsManager = new WebSocketManager(dbManager);
+const swaggerParser = new SwaggerParser(dbManager);
 // 2. Initialize MCP server
 const server = new Server({
     name: 'postmcp',
@@ -44,6 +52,13 @@ function redactEnvironment(env) {
 server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
         tools: [
+            {
+                name: 'mcp_usage_guide',
+                description: 'Read the instructions and workflow guidelines for LLM agents to use this MCP server effectively (explains variables, interpolation, chaining, and websockets).',
+                inputSchema: {
+                    type: 'object'
+                }
+            },
             // --- PROJECT MANAGEMENT ---
             {
                 name: 'project_create',
@@ -354,6 +369,33 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     },
                     required: ['suiteName', 'steps']
                 }
+            },
+            // --- DATABASE MAINTENANCE ---
+            {
+                name: 'db_status',
+                description: 'Get statistics about the local SQLite database, including database file path, file size, and row counts of all tables.',
+                inputSchema: {
+                    type: 'object'
+                }
+            },
+            {
+                name: 'db_reset',
+                description: 'DANGER: Factory reset the SQLite database. Closes database, deletes the database file, and recreates a fresh blank schema with a DefaultProject.',
+                inputSchema: {
+                    type: 'object'
+                }
+            },
+            // --- SWAGGER IMPORT ---
+            {
+                name: 'swagger_import',
+                description: 'Import API routes and schemas from a local Swagger/OpenAPI file or remote URL, outputting a structured Markdown API Reference.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        url: { type: 'string', description: 'Public URL to download swagger.json or openapi.json/yaml' },
+                        filePath: { type: 'string', description: 'Absolute path to local JSON/YAML Swagger specification' }
+                    }
+                }
             }
         ]
     };
@@ -383,6 +425,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     try {
         switch (name) {
+            case 'mcp_usage_guide': {
+                let contentText = '';
+                try {
+                    contentText = await fs.readFile(INSTRUCTIONS_PATH, 'utf8');
+                }
+                catch {
+                    contentText = `# AI Agent Guide: How to Use \`postmcp\`\n\n` +
+                        `This server is a local database-backed testing client designed for automated RESTful API and WebSocket endpoint verification.\n\n` +
+                        `- **Projects**: Use \`project_list\`, \`project_create\`, and \`project_switch\` to separate environments.\n` +
+                        `- **Environments**: Use \`env_configure\` and \`env_switch\` to configure baseUrl and credentials.\n` +
+                        `- **Variables**: Save variables with \`env_set_variable\`, then interpolate in requests via \`{{var_name}}\`.\n` +
+                        `- **Chaining tests**: Use \`test_run_suite\` to execute multiple steps sequentially and pass variables (via \`extractVariables\`) to subsequent steps.\n` +
+                        `- **WebSocket**: Connect with \`ws_connect\`, write messages with \`ws_send\`, and read with \`ws_read\` (pass \`waitForPattern\` regex to block/wait).\n` +
+                        `- **History**: Use \`history_list\` and \`history_compare\` to see JSON-diff response changes.\n` +
+                        `- **Swagger Import**: Use \`swagger_import\` to parse YAML/JSON specifications from URLs/paths to Markdown references.\n` +
+                        `- **Database Maintenance**: Use \`db_status\` to get file metrics, and \`db_reset\` to factory reset DB.`;
+                }
+                return {
+                    content: [{ type: 'text', text: contentText }]
+                };
+            }
             // --- PROJECTS ---
             case 'project_create': {
                 const { name, description } = args;
@@ -732,6 +795,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const mdReport = TestReporter.generateMarkdown(suiteResult);
                 return {
                     content: [{ type: 'text', text: mdReport }]
+                };
+            }
+            case 'db_status': {
+                const stats = await dbManager.getDatabaseStats();
+                const kbSize = (stats.fileSize / 1024).toFixed(2);
+                let md = `## 📊 Database Status Statistics\n\n`;
+                md += `- **Database Path**: \`${stats.filePath}\`\n`;
+                md += `- **File Size**: \`${kbSize} KB\` (\`${stats.fileSize} bytes\`)\n\n`;
+                md += `### 📋 Table Record Counts\n\n`;
+                md += `| Table | Records Count |\n`;
+                md += `| :--- | :--- |\n`;
+                md += `| **Projects** | \`${stats.projectsCount}\` |\n`;
+                md += `| **Environments** | \`${stats.environmentsCount}\` |\n`;
+                md += `| **Request Logs (History)** | \`${stats.historyCount}\` |\n`;
+                md += `| **OAuth2 Token Cache** | \`${stats.authCacheCount}\` |\n`;
+                return {
+                    content: [{ type: 'text', text: md }]
+                };
+            }
+            case 'db_reset': {
+                await dbManager.resetDatabase();
+                return {
+                    content: [{ type: 'text', text: '✅ Database has been successfully reset. Deleted all data, re-created tables, and initialized default settings.' }]
+                };
+            }
+            case 'swagger_import': {
+                const { url, filePath } = args;
+                const mdDoc = await swaggerParser.importSpec({ url, filePath });
+                return {
+                    content: [{ type: 'text', text: mdDoc }]
                 };
             }
             default:
