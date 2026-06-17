@@ -18,6 +18,7 @@ import { WebSocketManager } from './client/ws.js';
 import { AssertionEngine, Assertion } from './utils/assertion.js';
 import { TestReporter, TestSuiteResult, TestStepResult } from './utils/reporter.js';
 import { DiffEngine } from './utils/diff.js';
+import { SwaggerParser } from './utils/swagger.js';
 import jp from 'jsonpath';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -28,6 +29,7 @@ const INSTRUCTIONS_PATH = path.join(__dirname, '..', 'ai_instructions.md');
 const dbManager = new DbManager();
 const httpClient = new HttpClient(dbManager);
 const wsManager = new WebSocketManager(dbManager);
+const swaggerParser = new SwaggerParser(dbManager);
 
 // 2. Initialize MCP server
 const server = new Server(
@@ -401,6 +403,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: 'object'
         }
+      },
+      // --- SWAGGER IMPORT ---
+      {
+        name: 'swagger_import',
+        description: 'Import API routes and schemas from a local Swagger/OpenAPI file or remote URL, outputting a structured Markdown API Reference.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: 'Public URL to download swagger.json or openapi.json/yaml' },
+            filePath: { type: 'string', description: 'Absolute path to local JSON/YAML Swagger specification' }
+          }
+        }
       }
     ]
   };
@@ -445,7 +459,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             `- **Variables**: Save variables with \`env_set_variable\`, then interpolate in requests via \`{{var_name}}\`.\n` +
             `- **Chaining tests**: Use \`test_run_suite\` to execute multiple steps sequentially and pass variables (via \`extractVariables\`) to subsequent steps.\n` +
             `- **WebSocket**: Connect with \`ws_connect\`, write messages with \`ws_send\`, and read with \`ws_read\` (pass \`waitForPattern\` regex to block/wait).\n` +
-            `- **History**: Use \`history_list\` and \`history_compare\` to see JSON-diff response changes.`;
+            `- **History**: Use \`history_list\` and \`history_compare\` to see JSON-diff response changes.\n` +
+            `- **Swagger Import**: Use \`swagger_import\` to parse YAML/JSON specifications from URLs/paths to Markdown references.\n` +
+            `- **Database Maintenance**: Use \`db_status\` to get file metrics, and \`db_reset\` to factory reset DB.`;
         }
         return {
           content: [{ type: 'text', text: contentText }]
@@ -881,6 +897,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         await dbManager.resetDatabase();
         return {
           content: [{ type: 'text', text: '✅ Database has been successfully reset. Deleted all data, re-created tables, and initialized default settings.' }]
+        };
+      }
+
+      case 'swagger_import': {
+        const { url, filePath } = args as any;
+        const mdDoc = await swaggerParser.importSpec({ url, filePath });
+        return {
+          content: [{ type: 'text', text: mdDoc }]
         };
       }
 

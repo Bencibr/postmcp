@@ -85,3 +85,6 @@ All HTTP requests are logged automatically.
 ### E. Database Maintenance (`db_*`)
 - **`db_status`**: Get database stats, file size (in KB), database absolute path, and row counts of all tables.
 - **`db_reset`**: **DANGER**: Perform a factory reset. This closes the database connection, deletes the database file, and re-initializes a fresh schema with a `DefaultProject` and `default` environment.
+
+### F. Swagger / OpenAPI Spec Import (`swagger_import`)
+- **`swagger_import`**: Import a Swagger/OpenAPI spec via `filePath` (absolute path of local JSON/YAML) or `url` (remote endpoint). Returns a complete Markdown API Reference detailing all endpoints, parameter positions/types, and request body schema mock trees to guide your testing queries.

@@ -78,6 +78,10 @@ Initiates websocket connects, sends raw text/JSON messages, and polls buffered q
 - **`db_status`**: Get database file path, file size in KB, and table counts.
 - **`db_reset`**: **DANGER**: Perform a factory reset. This closes the database, unlinks the file, and re-initializes a fresh database schema.
 
+### 8. Swagger/OpenAPI Import (`swagger_import`)
+- **`swagger_import`**: Read local JSON/YAML file configurations or fetch specs from a URL. Resolves and translates specifications into structural API Markdown specifications.
+  - Parameters: `url`, `filePath`
+
 #### Example Comparison Diff Output
 ```markdown
 ## 🔍 Request History Comparison (ID: 1 vs ID: 2)

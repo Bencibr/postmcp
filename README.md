@@ -55,6 +55,7 @@ Add this configuration to your Claude Desktop config (usually at `~/Library/Appl
 5. **WebSocket Client (`ws_*`)**: `ws_connect`, `ws_send`, `ws_read` (regex waiting support), `ws_close`, `ws_list`.
 6. **Request History (`history_*`)**: `history_list` (query audits), `history_get` (detail log), `history_compare` (diff logs), `history_clear`.
 7. **Database Maintenance (`db_*`)**: `db_status` (returns database file path, file size in KB, and table row counts), `db_reset` (factory reset DB).
+8. **Swagger Import (`swagger_import`)**: `swagger_import` (imports routes and schemas from JSON/YAML files or URLs into Markdown references).
 
 ### 🧪 Integration Tests
 
@@ -139,6 +140,8 @@ npx tsx src/test/runTests.ts
 7. **数据库维护 (`db_*`)**：
    - `db_status`：查询本地 SQLite 数据库的文件路径、大小（KB）及各个表的数据量。
    - `db_reset`：**危险操作**：清空并重置数据库，重新初始化默认项目和环境。
+8. **Swagger 导入 (`swagger_import`)**：
+   - `swagger_import`：读取本地 Swagger/OpenAPI 文件 (JSON 或 YAML 格式) 或拉取远程文档 URL，解析生成结构化的 API 接口 Markdown 文档。
 
 ### 🧪 本地集成测试
 
