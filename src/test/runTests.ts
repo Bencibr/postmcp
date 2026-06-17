@@ -105,6 +105,11 @@ async function runTests() {
     assert(getRes.status === 200, `GET /api/users/1 code is ${getRes.status}`);
     assert(getRes.body === 'Alice', `Response filtered name matches Alice: "${getRes.body}"`);
 
+    const report = AssertionEngine.run(getRes, [
+      { type: 'body', property: '$.role', operator: 'equals', expected: 'admin' }
+    ]);
+    assert(report.passed, `Assertion on fullBody passed: ${report.passed}`);
+
     // 4. Test DB History logging
     console.log('\n--- Test 4: Verify request logged in SQLite history table ---');
     const history = await dbManager.listHistory({ environmentId: devId });

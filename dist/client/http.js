@@ -204,7 +204,9 @@ export class HttpClient {
         // Apply JSONPath filters
         if (options.jsonpathFilter && responseBody) {
             try {
-                const parsedJson = typeof responseBody === 'string' ? JSON.parse(responseBody) : responseBody;
+                const parsedJson = typeof responseBody === 'string'
+                    ? JSON.parse(responseBody)
+                    : JSON.parse(JSON.stringify(responseBody));
                 const filtered = jp.query(parsedJson, options.jsonpathFilter);
                 responseBody = filtered.length === 1 ? filtered[0] : filtered;
             }
