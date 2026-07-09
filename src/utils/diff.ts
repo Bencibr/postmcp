@@ -89,7 +89,8 @@ export class DiffEngine {
     time1: number,
     time2: number,
     body1: string,
-    body2: string
+    body2: string,
+    format?: 'table' | 'unified'
   ): string {
     let md = `## 🔍 Request History Comparison (ID: ${id1} vs ID: ${id2})\n\n`;
 
@@ -123,6 +124,20 @@ export class DiffEngine {
       const diffs = this.compare(parsed1, parsed2);
       if (diffs.length === 0) {
         md += `> [!NOTE]\n> **Response bodies are structurally identical.**\n\n`;
+      } else if (format === 'unified') {
+        // Unified diff format — more readable for large diffs
+        md += `\`\`\`diff\n`;
+        for (const diff of diffs) {
+          const pathStr = diff.path;
+          if (diff.type === 'added') {
+            md += `+ ${pathStr}: ${JSON.stringify(diff.newValue)}\n`;
+          } else if (diff.type === 'removed') {
+            md += `- ${pathStr}: ${JSON.stringify(diff.oldValue)}\n`;
+          } else {
+            md += `~ ${pathStr}: ${JSON.stringify(diff.oldValue)} → ${JSON.stringify(diff.newValue)}\n`;
+          }
+        }
+        md += `\`\`\`\n\n`;
       } else {
         md += `| Path | Type | Value in #${id1} (Old) | Value in #${id2} (New) |\n`;
         md += `| :--- | :--- | :--- | :--- |\n`;

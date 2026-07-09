@@ -202,6 +202,37 @@ export class SwaggerParser {
           md += `\n\`\`\`\n\n`;
         }
 
+        // Responses (both OAS 3 and Swagger 2.0)
+        const responses = details.responses;
+        if (responses && Object.keys(responses).length > 0) {
+          md += `**Responses:**\n\n`;
+          md += `| Status Code | Description | Response Schema |\n`;
+          md += `| :--- | :--- | :--- |\n`;
+
+          for (const [statusCode, responseObj] of Object.entries(responses)) {
+            const resp = responseObj as any;
+            const respDesc = resp.description || '';
+            let schemaMd = '*No body defined*';
+
+            if (isOas3 && resp.content) {
+              const jsonContent = resp.content['application/json'] || resp.content['*/*'] || {};
+              if (jsonContent.schema) {
+                const schemas = spec.components?.schemas || {};
+                schemaMd = `\`\`\`json\n${this.renderSchemaMock(jsonContent.schema, schemas)}\n\`\`\``;
+              } else {
+                schemaMd = `*Content types:* ${Object.keys(resp.content).join(', ')}`;
+              }
+            } else if (resp.schema) {
+              // Swagger 2.0 — schema directly on response
+              const definitions = spec.definitions || {};
+              schemaMd = `\`\`\`json\n${this.renderSchemaMock(resp.schema, definitions)}\n\`\`\``;
+            }
+
+            md += `| \`${statusCode}\` | ${respDesc} | ${schemaMd.replace(/\n/g, '<br/>')} |\n`;
+          }
+          md += `\n`;
+        }
+
         md += `\n`;
       }
     }

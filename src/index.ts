@@ -19,6 +19,7 @@ import { AssertionEngine, Assertion } from './utils/assertion.js';
 import { TestReporter, TestSuiteResult, TestStepResult } from './utils/reporter.js';
 import { DiffEngine } from './utils/diff.js';
 import { SwaggerParser } from './utils/swagger.js';
+import { logger } from './utils/logger.js';
 import jp from 'jsonpath';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -115,6 +116,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['projectId']
         }
       },
+      {
+        name: 'project_rename',
+        description: 'Rename an existing project workspace.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectId: { type: 'number', description: 'Database ID of the project to rename' },
+            name: { type: 'string', description: 'New unique name for the project' }
+          },
+          required: ['projectId', 'name']
+        }
+      },
 
       // --- ENVIRONMENT MANAGEMENT ---
       {
@@ -124,21 +137,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             name: { type: 'string', description: 'Name of environment (e.g., dev, prod, local)' },
-            baseUrl: { type: 'string', description: 'Base URL for API requests (e.g. https://api.dev.example.com)' },
+            baseUrl: { type: 'string', description: 'Base URL for API requests (e.g. https://api.dev.example.com). Supports {{var}} interpolation from environment variables.' },
             headers: { type: 'object', additionalProperties: { type: 'string' }, description: 'Default headers' },
             cookies: { type: 'object', additionalProperties: { type: 'string' }, description: 'Default cookies' },
             variables: { type: 'object', description: 'Default variables key-value mapping' },
-            authType: { type: 'string', enum: ['none', 'bearer', 'apiKey', 'oauth2'], default: 'none' },
+            authType: { type: 'string', enum: ['none', 'bearer', 'apiKey', 'basic', 'oauth2'], default: 'none' },
             authToken: { type: 'string', description: 'Static token value (Bearer or API Key)' },
             apiKeyHeaderName: { type: 'string', description: 'Custom API Key header name (default: x-api-key)' },
+            timeout: { type: 'number', description: 'Default request timeout in milliseconds (default: 30000)' },
             oauth2Config: {
               type: 'object',
               properties: {
-                grantType: { type: 'string', enum: ['client_credentials'] },
+                grantType: { type: 'string', enum: ['client_credentials', 'password'] },
                 tokenUrl: { type: 'string', description: 'OAuth2 Token url' },
                 clientId: { type: 'string' },
                 clientSecret: { type: 'string' },
-                scope: { type: 'string' }
+                scope: { type: 'string' },
+                username: { type: 'string', description: 'Username for password grant type' },
+                password: { type: 'string', description: 'Password for password grant type' }
               },
               required: ['grantType', 'tokenUrl', 'clientId', 'clientSecret']
             }
@@ -188,6 +204,45 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
+        name: 'env_get_variable',
+        description: 'Get the value of a specific variable from the active environment.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            key: { type: 'string', description: 'Variable name' }
+          },
+          required: ['key']
+        }
+      },
+      {
+        name: 'env_delete_variable',
+        description: 'Delete a variable from the active environment configuration.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            key: { type: 'string', description: 'Variable name to delete' }
+          },
+          required: ['key']
+        }
+      },
+      {
+        name: 'env_list_variables',
+        description: 'List all variables defined in the active environment.',
+        inputSchema: { type: 'object' }
+      },
+      {
+        name: 'env_rename',
+        description: 'Rename an existing environment profile.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            environmentId: { type: 'number', description: 'Database ID of the environment to rename' },
+            name: { type: 'string', description: 'New name for the environment' }
+          },
+          required: ['environmentId', 'name']
+        }
+      },
+      {
         name: 'env_set_allowlist',
         description: 'Configure target domains allowed for outgoing HTTP/WebSocket requests (e.g. ["localhost", "*.company.com"]). Set to empty array to allow all.',
         inputSchema: {
@@ -202,6 +257,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['domains']
         }
       },
+      {
+        name: 'env_get_allowlist',
+        description: 'Get the current URL allowlist configuration.',
+        inputSchema: { type: 'object' }
+      },
 
       // --- HTTP REQUEST ---
       {
@@ -211,13 +271,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             url: { type: 'string', description: 'Request path or full URL' },
-            method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD'], default: 'GET' },
+            method: { type: 'string', default: 'GET', description: 'HTTP method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, or any custom method)' },
             headers: { type: 'object', additionalProperties: { type: 'string' } },
             params: { type: 'object', additionalProperties: { type: 'string' } },
             body: { type: 'string', description: 'Request payload (string or stringified JSON)' },
             bodyType: { type: 'string', enum: ['json', 'urlencoded', 'form-data', 'raw'], default: 'json' },
-            timeout: { type: 'number' },
+            timeout: { type: 'number', description: 'Request timeout in ms (overrides environment default)' },
             jsonpathFilter: { type: 'string', description: 'Extract specific parts of response payload' },
+            fileFields: { type: 'object', additionalProperties: { type: 'string' }, description: 'File uploads: {"fieldName": "/path/to/file"} for form-data body type' },
+            maxResponseLength: { type: 'number', description: 'Max response body length in chars (default: 15000). Set higher for full responses, lower to save tokens.' },
+            returnBody: { type: 'boolean', description: 'Set false to skip response body (silent mode). Returns only status + duration. Saves tokens.' },
+            retryCount: { type: 'number', description: 'Auto-retry count on network errors or 5xx (default: 0)' },
+            retryDelay: { type: 'number', description: 'Delay between retries in ms (default: 1000)' },
+            cacheTtl: { type: 'number', description: 'Cache TTL in ms for GET/HEAD requests. Same URL within TTL returns cached response. Saves network calls.' },
+            assertBefore: {
+              type: 'object',
+              description: 'Conditional request: only return full response if condition is met (saves tokens on failures)',
+              properties: {
+                type: { type: 'string', enum: ['status', 'header', 'body'] },
+                property: { type: 'string', description: 'JSONPath for body type, header name for header type' },
+                operator: { type: 'string', enum: ['equals', 'notEquals', 'contains', 'exists', 'matches', 'greaterThan', 'lessThan'] },
+                expected: { oneOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }] }
+              },
+              required: ['type', 'operator']
+            },
             assertions: {
               type: 'array',
               items: {
@@ -226,7 +303,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                   type: { type: 'string', enum: ['status', 'header', 'body', 'responseTime'] },
                   property: { type: 'string' },
                   operator: { type: 'string', enum: ['equals', 'notEquals', 'contains', 'notContains', 'exists', 'notExists', 'matches', 'greaterThan', 'lessThan', 'in', 'notIn'] },
-                  expected: { type: 'string' }
+                  expected: { oneOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }] }
                 },
                 required: ['type', 'operator']
               }
@@ -304,7 +381,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             limit: { type: 'number', default: 20 },
             offset: { type: 'number', default: 0 },
-            environmentId: { type: 'number', description: 'Filter logs by a specific environment ID' }
+            environmentId: { type: 'number', description: 'Filter logs by a specific environment ID' },
+            method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'], description: 'Filter by HTTP method' },
+            statusCode: { type: 'number', description: 'Filter by response status code' },
+            urlKeyword: { type: 'string', description: 'Filter by URL keyword' },
+            dateFrom: { type: 'string', description: 'Filter records from this ISO date/time (inclusive)' },
+            dateTo: { type: 'string', description: 'Filter records up to this ISO date/time (inclusive)' }
           }
         }
       },
@@ -326,7 +408,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             id1: { type: 'number', description: 'First audit record ID' },
-            id2: { type: 'number', description: 'Second audit record ID' }
+            id2: { type: 'number', description: 'Second audit record ID' },
+            format: { type: 'string', enum: ['table', 'unified'], default: 'table', description: 'Diff output format: table (default) or unified (compact diff style)' }
           },
           required: ['id1', 'id2']
         }
@@ -350,6 +433,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             suiteName: { type: 'string', description: 'Suite label' },
+            dataSource: {
+              type: 'object',
+              description: 'Data-Driven Testing: load test data from CSV/JSON file and run suite for each row. Use {{row.columnName}} in step fields.',
+              properties: {
+                type: { type: 'string', enum: ['csv', 'json'], description: 'Data file format' },
+                filePath: { type: 'string', description: 'Absolute path to CSV or JSON data file' }
+              },
+              required: ['type', 'filePath']
+            },
             steps: {
               type: 'array',
               items: {
@@ -357,7 +449,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 properties: {
                   stepName: { type: 'string' },
                   url: { type: 'string' },
-                  method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD'], default: 'GET' },
+                  method: { type: 'string', default: 'GET', description: 'HTTP method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, or custom)' },
                   headers: { type: 'object', additionalProperties: { type: 'string' } },
                   params: { type: 'object', additionalProperties: { type: 'string' } },
                   body: { type: 'string' },
@@ -376,7 +468,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         type: { type: 'string', enum: ['status', 'header', 'body', 'responseTime'] },
                         property: { type: 'string' },
                         operator: { type: 'string', enum: ['equals', 'notEquals', 'contains', 'notContains', 'exists', 'notExists', 'matches', 'greaterThan', 'lessThan', 'in', 'notIn'] },
-                        expected: { type: 'string' }
+                        expected: { oneOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }] }
                       },
                       required: ['type', 'operator']
                     }
@@ -401,7 +493,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         name: 'db_reset',
         description: 'DANGER: Factory reset the SQLite database. Closes database, deletes the database file, and recreates a fresh blank schema with a DefaultProject.',
         inputSchema: {
-          type: 'object'
+          type: 'object',
+          properties: {
+            confirm: { type: 'boolean', description: 'Must be true to confirm the destructive reset operation' }
+          },
+          required: ['confirm']
         }
       },
       // --- SWAGGER IMPORT ---
@@ -415,16 +511,165 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             filePath: { type: 'string', description: 'Absolute path to local JSON/YAML Swagger specification' }
           }
         }
+      },
+      // --- GRAPHQL ---
+      {
+        name: 'graphql_request',
+        description: 'Send a GraphQL query/mutation to a GraphQL endpoint. Automatically injects credentials and variables.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: 'GraphQL endpoint URL (absolute or relative path)' },
+            query: { type: 'string', description: 'GraphQL query or mutation string' },
+            variables: { type: 'object', description: 'GraphQL variables object (optional)' },
+            operationName: { type: 'string', description: 'GraphQL operation name (optional)' },
+            headers: { type: 'object', additionalProperties: { type: 'string' }, description: 'Additional request headers' },
+            timeout: { type: 'number' }
+          },
+          required: ['url', 'query']
+        }
+      },
+      // --- TEST SUITE PERSISTENCE ---
+      {
+        name: 'suite_save',
+        description: 'Save or update a named test suite in the database under the active project.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Suite name (unique per project)' },
+            steps: { type: 'array', items: { type: 'object' }, description: 'Array of step objects (same format as test_run_suite steps)' },
+            description: { type: 'string', description: 'Optional suite description' }
+          },
+          required: ['name', 'steps']
+        }
+      },
+      {
+        name: 'suite_load',
+        description: 'Load a saved test suite by ID and execute it immediately.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            suiteId: { type: 'number', description: 'Database ID of the saved suite' }
+          },
+          required: ['suiteId']
+        }
+      },
+      {
+        name: 'suite_list',
+        description: 'List all saved test suites under the active project.',
+        inputSchema: { type: 'object' }
+      },
+      {
+        name: 'suite_delete',
+        description: 'Delete a saved test suite.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            suiteId: { type: 'number', description: 'Database ID of the suite to delete' }
+          },
+          required: ['suiteId']
+        }
+      },
+      // --- HISTORY EXPORT ---
+      {
+        name: 'history_export',
+        description: 'Export request history as a JSON array.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectId: { type: 'number', description: 'Optional: export only for a specific project' }
+          }
+        }
+      },
+      // --- ENVIRONMENT EXPORT/IMPORT ---
+      {
+        name: 'env_export',
+        description: 'Export an environment configuration as a portable JSON object.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            environmentId: { type: 'number', description: 'ID of the environment to export' }
+          },
+          required: ['environmentId']
+        }
+      },
+      {
+        name: 'env_import',
+        description: 'Import an environment configuration from a portable JSON object.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            data: { type: 'object', description: 'Exported environment JSON object (from env_export)' },
+            projectId: { type: 'number', description: 'Optional: target project ID (default: active project)' }
+          },
+          required: ['data']
+        }
+      },
+      // --- PROJECT EXPORT/IMPORT ---
+      {
+        name: 'project_export',
+        description: 'Export a project (including all its environments) as a portable JSON object.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectId: { type: 'number', description: 'ID of the project to export' }
+          },
+          required: ['projectId']
+        }
+      },
+      {
+        name: 'project_import',
+        description: 'Import a project (including all its environments) from a portable JSON object.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            data: { type: 'object', description: 'Exported project JSON object (from project_export)' }
+          },
+          required: ['data']
+        }
+      },
+      // --- POSTMAN COLLECTION IMPORT ---
+      {
+        name: 'postman_import',
+        description: 'Import a Postman Collection v2 JSON file, generating a structured Markdown API reference.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            filePath: { type: 'string', description: 'Absolute path to the Postman Collection JSON file' }
+          },
+          required: ['filePath']
+        }
       }
     ]
   };
 });
 
-// Mustache variable interpolation helper
+// Mustache variable interpolation helper with built-in dynamic variables
+const BUILTIN_VARIABLES: Record<string, () => string> = {
+  '$timestamp': () => String(Date.now()),
+  '$isoTimestamp': () => new Date().toISOString(),
+  '$uuid': () => crypto.randomUUID(),
+  '$randomInt': () => String(Math.floor(Math.random() * 1000000)),
+  '$randomFloat': () => (Math.random() * 1000).toFixed(2),
+  '$randomEmail': () => `user${Math.floor(Math.random() * 100000)}@test.com`,
+  '$randomName': () => {
+    const names = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank'];
+    return names[Math.floor(Math.random() * names.length)];
+  },
+  '$randomCity': () => {
+    const cities = ['Beijing', 'Shanghai', 'Tokyo', 'New York', 'London', 'Paris', 'Berlin'];
+    return cities[Math.floor(Math.random() * cities.length)];
+  },
+  '$currentDate': () => new Date().toISOString().split('T')[0],
+  '$currentTime': () => new Date().toTimeString().split(' ')[0],
+};
+
 function interpolate(target: any, variables: Record<string, any>): any {
   if (typeof target === 'string') {
     return target.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
       const trimmed = key.trim();
+      // Built-in dynamic variables take precedence
+      if (BUILTIN_VARIABLES[trimmed]) return BUILTIN_VARIABLES[trimmed]();
       return variables[trimmed] !== undefined ? String(variables[trimmed]) : `{{${trimmed}}}`;
     });
   }
@@ -441,9 +686,70 @@ function interpolate(target: any, variables: Record<string, any>): any {
   return target;
 }
 
+/**
+ * Shared step execution engine used by both test_run_suite and suite_load.
+ * Executes steps sequentially, interpolating variables, running assertions,
+ * extracting variables, and collecting results.
+ */
+async function executeSuiteSteps(
+  steps: any[],
+  variables: Record<string, any>,
+  state: { projectId: number; projectName: string; envId: number; envName: string }
+): Promise<TestStepResult[]> {
+  const stepResults: TestStepResult[] = [];
+  for (const step of steps) {
+    const { stepName, url, method, headers, params, body, bodyType, jsonpathFilter, extractVariables, assertions } = step;
+    const finalUrl = interpolate(url, variables);
+    const finalHeaders = headers ? interpolate(headers, variables) : undefined;
+    const finalParams = params ? interpolate(params, variables) : undefined;
+    const finalBody = body ? interpolate(body, variables) : undefined;
+
+    try {
+      const response = await httpClient.send({
+        url: finalUrl, method: method || 'GET',
+        headers: finalHeaders, params: finalParams, body: finalBody,
+        bodyType, jsonpathFilter
+      });
+
+      const assertionReport = (assertions?.length > 0) ? AssertionEngine.run(response, assertions as Assertion[]) : undefined;
+      const extractionErrors: string[] = [];
+
+      if (extractVariables && Object.keys(extractVariables).length > 0) {
+        let parsedBody = response.fullBody !== undefined ? response.fullBody : response.body;
+        if (typeof parsedBody === 'string') try { parsedBody = JSON.parse(parsedBody); } catch {}
+
+        for (const [varName, pathExpr] of Object.entries(extractVariables)) {
+          try {
+            const nodes = jp.query(parsedBody, String(pathExpr));
+            if (nodes.length > 0) {
+              variables[varName] = nodes[0];
+              await dbManager.setEnvironmentVariable(state.envId, varName, nodes[0]);
+            } else {
+              extractionErrors.push(`Variable "${varName}" extraction failed: JSONPath "${pathExpr}" returned no results`);
+            }
+          } catch (jpErr: any) {
+            extractionErrors.push(`Variable "${varName}" extraction failed: ${jpErr.message}`);
+          }
+        }
+      }
+
+      stepResults.push({
+        stepName, url: finalUrl, method: method || 'GET',
+        responseStatus: response.status, durationMs: response.durationMs,
+        assertionReport,
+        extractionErrors: extractionErrors.length > 0 ? extractionErrors : undefined
+      });
+    } catch (err: any) {
+      stepResults.push({ stepName, url: finalUrl, method: method || 'GET', error: err.message });
+    }
+  }
+  return stepResults;
+}
+
 // 4. Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  const toolStart = Date.now();
 
   try {
     switch (name) {
@@ -500,9 +806,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'project_rename': {
+        const { projectId, name } = args as any;
+        await dbManager.renameProject(projectId, name);
+        return {
+          content: [{ type: 'text', text: `Project ID ${projectId} renamed to "${name}".` }]
+        };
+      }
+
       // --- ENVIRONMENTS ---
       case 'env_configure': {
-        const { name, baseUrl, headers, cookies, variables, authType, authToken, apiKeyHeaderName, oauth2Config } = args as any;
+        const { name, baseUrl, headers, cookies, variables, authType, authToken, apiKeyHeaderName, timeout, oauth2Config } = args as any;
         const projId = await dbManager.getActiveProjectId();
         
         const envData = {
@@ -513,6 +827,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           authType,
           authToken,
           apiKeyHeaderName,
+          timeout,
           oauth2Config: oauth2Config ? JSON.stringify(oauth2Config) : undefined
         };
 
@@ -563,6 +878,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'env_get_variable': {
+        const { key } = args as any;
+        const state = await dbManager.getActiveProjectAndEnv();
+        const value = await dbManager.getEnvironmentVariable(state.envId, key);
+        if (value === undefined) {
+          return { content: [{ type: 'text', text: `Variable "${key}" not found in environment "${state.envName}".` }] };
+        }
+        return { content: [{ type: 'text', text: `Variable "${key}" = ${JSON.stringify(value)}` }] };
+      }
+
+      case 'env_delete_variable': {
+        const { key } = args as any;
+        const state = await dbManager.getActiveProjectAndEnv();
+        const deleted = await dbManager.deleteEnvironmentVariable(state.envId, key);
+        if (!deleted) {
+          return { content: [{ type: 'text', text: `Variable "${key}" not found in environment "${state.envName}". Nothing deleted.` }] };
+        }
+        return { content: [{ type: 'text', text: `Deleted variable "${key}" from environment "${state.envName}".` }] };
+      }
+
+      case 'env_list_variables': {
+        const state = await dbManager.getActiveProjectAndEnv();
+        const vars = await dbManager.listEnvironmentVariables(state.envId);
+        if (Object.keys(vars).length === 0) {
+          return { content: [{ type: 'text', text: `No variables defined in environment "${state.envName}".` }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(vars, null, 2) }] };
+      }
+
+      case 'env_rename': {
+        const { environmentId, name } = args as any;
+        await dbManager.renameEnvironment(environmentId, name);
+        return { content: [{ type: 'text', text: `Environment ID ${environmentId} renamed to "${name}".` }] };
+      }
+
       case 'env_set_allowlist': {
         const { domains } = args as any;
         await dbManager.setAllowlist(domains);
@@ -571,9 +921,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'env_get_allowlist': {
+        const allowlist = await dbManager.getAllowlist();
+        return {
+          content: [{ type: 'text', text: `Current URL Allowlist: ${JSON.stringify(allowlist)}` }]
+        };
+      }
+
       // --- HTTP REQUEST ---
       case 'http_request': {
-        const { url, method, headers, params, body, bodyType, timeout, jsonpathFilter, assertions } = args as any;
+        const { url, method, headers, params, body, bodyType, timeout, jsonpathFilter, fileFields, maxResponseLength, returnBody, retryCount, retryDelay, cacheTtl, assertBefore, assertions } = args as any;
         
         const state = await dbManager.getActiveProjectAndEnv();
         const env = await dbManager.getEnvironmentById(state.envId);
@@ -593,14 +950,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           body: finalBody,
           bodyType,
           timeout,
-          jsonpathFilter
+          jsonpathFilter,
+          fileFields,
+          maxResponseLength,
+          returnBody,
+          retryCount,
+          retryDelay,
+          cacheTtl,
+          assertBefore
         });
 
         let outputText = `### Response Info\n`;
         outputText += `- **Project**: \`${state.projectName}\` | **Environment**: \`${state.envName}\`\n`;
         outputText += `- **URL**: \`${finalUrl}\`\n`;
         outputText += `- **Status**: ${response.status} ${response.statusText}\n`;
-        outputText += `- **Duration**: ${response.durationMs}ms\n\n`;
+        outputText += `- **Duration**: ${response.durationMs}ms\n`;
+        if (response.cached) outputText += `- **Cache**: ✅ Served from cache (cacheTtl active)\n`;
+        outputText += `\n`;
 
         if (assertions && assertions.length > 0) {
           const report = AssertionEngine.run(response, assertions as Assertion[]);
@@ -687,7 +1053,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // --- HISTORY & COMPARISON ---
       case 'history_list': {
-        const { limit, offset, environmentId } = args as any;
+        const { limit, offset, environmentId, method, statusCode, urlKeyword, dateFrom, dateTo } = args as any;
         const activeState = await dbManager.getActiveProjectAndEnv();
         
         // If environmentId is not specified, we pull filters by active projectId
@@ -695,6 +1061,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           limit,
           offset,
           environmentId,
+          method,
+          statusCode,
+          urlKeyword,
+          dateFrom,
+          dateTo,
           ...(!environmentId && { projectId: activeState.projectId })
         });
 
@@ -746,7 +1117,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'history_compare': {
-        const { id1, id2 } = args as any;
+        const { id1, id2, format } = args as any;
         const record1 = await dbManager.getHistoryById(id1);
         const record2 = await dbManager.getHistoryById(id2);
 
@@ -765,7 +1136,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           record1.durationMs,
           record2.durationMs,
           record1.responseBody || '',
-          record2.responseBody || ''
+          record2.responseBody || '',
+          format || 'table'
         );
 
         return {
@@ -783,94 +1155,70 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // --- SEQUENTIAL TESTING SUITE RUNNER ---
       case 'test_run_suite': {
-        const { suiteName, steps } = args as any;
+        const { suiteName, steps, dataSource } = args as any;
         const startTime = Date.now();
-        const stepResults: TestStepResult[] = [];
         
         const state = await dbManager.getActiveProjectAndEnv();
         const env = await dbManager.getEnvironmentById(state.envId);
         if (!env) throw new Error('Active environment configs not loaded.');
 
-        const variables = JSON.parse(env.variables || '{}');
+        let variables = JSON.parse(env.variables || '{}');
 
-        for (const step of steps) {
-          const { stepName, url, method, headers, params, body, bodyType, jsonpathFilter, extractVariables, assertions } = step;
-
-          const finalUrl = interpolate(url, variables);
-          const finalHeaders = headers ? interpolate(headers, variables) : undefined;
-          const finalParams = params ? interpolate(params, variables) : undefined;
-          const finalBody = body ? interpolate(body, variables) : undefined;
-
-          try {
-            const response = await httpClient.send({
-              url: finalUrl,
-              method: method || 'GET',
-              headers: finalHeaders,
-              params: finalParams,
-              body: finalBody,
-              bodyType,
-              jsonpathFilter
-            });
-
-            let assertionReport = undefined;
-            if (assertions && assertions.length > 0) {
-              assertionReport = AssertionEngine.run(response, assertions as Assertion[]);
+        // Data-Driven Testing: load rows from CSV/JSON file and run suite for each row
+        if (dataSource) {
+          const rawContent = await fs.readFile(dataSource.filePath, 'utf8');
+          let rows: Record<string, any>[] = [];
+          if (dataSource.type === 'csv') {
+            const lines = rawContent.trim().split('\n');
+            const headers = lines[0].split(',').map(h => h.trim());
+            for (let i = 1; i < lines.length; i++) {
+              const vals = lines[i].split(',').map(v => v.trim());
+              const row: Record<string, any> = {};
+              headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
+              rows.push(row);
             }
-
-            // Extract variables and update environment database variables record
-            if (extractVariables && Object.keys(extractVariables).length > 0) {
-              let parsedBody = response.fullBody !== undefined ? response.fullBody : response.body;
-              if (typeof parsedBody === 'string') {
-                try { parsedBody = JSON.parse(parsedBody); } catch {}
-              }
-
-              for (const [varName, pathExpr] of Object.entries(extractVariables)) {
-                try {
-                  const nodes = jp.query(parsedBody, String(pathExpr));
-                  if (nodes.length > 0) {
-                    variables[varName] = nodes[0];
-                    await dbManager.setEnvironmentVariable(state.envId, varName, nodes[0]);
-                  }
-                } catch (jpErr: any) {
-                  console.error(`Variables extract failed in suite step "${stepName}": ${jpErr.message}`);
-                }
-              }
-            }
-
-            stepResults.push({
-              stepName,
-              url: finalUrl,
-              method: method || 'GET',
-              responseStatus: response.status,
-              durationMs: response.durationMs,
-              assertionReport
-            });
-
-          } catch (err: any) {
-            stepResults.push({
-              stepName,
-              url: finalUrl,
-              method: method || 'GET',
-              error: err.message
-            });
+          } else { // JSON
+            rows = JSON.parse(rawContent);
+            if (!Array.isArray(rows)) rows = [rows];
           }
+
+          const allResults: TestStepResult[] = [];
+          let allPassed = true;
+          for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+            const row = rows[rowIdx];
+            // Inject row data as {{row.columnName}} variables
+            const rowVars = { ...variables };
+            for (const [k, v] of Object.entries(row)) {
+              rowVars[`row.${k}`] = v;
+            }
+            const rowResults = await executeSuiteSteps(steps, rowVars, state);
+            // Mark step names with row index
+            rowResults.forEach(s => { s.stepName = `[Row ${rowIdx + 1}] ${s.stepName}`; });
+            allResults.push(...rowResults);
+            if (!rowResults.every(s => !s.error && (!s.assertionReport || s.assertionReport.passed))) {
+              allPassed = false;
+            }
+          }
+
+          const endTime = Date.now();
+          const suiteResult: TestSuiteResult = {
+            suiteName: `${suiteName} (DDT: ${rows.length} rows)`, passed: allPassed,
+            steps: allResults, startTime, endTime
+          };
+          return { content: [{ type: 'text', text: TestReporter.generateMarkdown(suiteResult) }] };
         }
 
+        // Normal mode: single run
+        const stepResults = await executeSuiteSteps(steps, variables, state);
         const endTime = Date.now();
         const passed = stepResults.every(s => !s.error && (!s.assertionReport || s.assertionReport.passed));
 
         const suiteResult: TestSuiteResult = {
-          suiteName,
-          passed,
-          steps: stepResults,
-          startTime,
-          endTime
+          suiteName, passed, steps: stepResults, startTime, endTime
         };
 
         const mdReport = TestReporter.generateMarkdown(suiteResult);
-        return {
-          content: [{ type: 'text', text: mdReport }]
-        };
+        return { content: [{ type: 'text', text: mdReport }] };
       }
 
       case 'db_status': {
@@ -894,6 +1242,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'db_reset': {
+        const { confirm } = args as any;
+        if (confirm !== true) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: 'DANGER: db_reset requires `confirm: true` to proceed. This will delete all data permanently.' }]
+          };
+        }
         await dbManager.resetDatabase();
         return {
           content: [{ type: 'text', text: '✅ Database has been successfully reset. Deleted all data, re-created tables, and initialized default settings.' }]
@@ -908,10 +1263,144 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'graphql_request': {
+        const { url, query, variables: gqlVars, operationName, headers: gqlHeaders, timeout: gqlTimeout } = args as any;
+        const gqlBody: any = { query };
+        if (gqlVars) gqlBody.variables = gqlVars;
+        if (operationName) gqlBody.operationName = operationName;
+        const gqlResult = await httpClient.send({
+          url,
+          method: 'POST',
+          headers: { ...(gqlHeaders || {}), 'Content-Type': 'application/json' },
+          body: JSON.stringify(gqlBody),
+          bodyType: 'json',
+          timeout: gqlTimeout
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(gqlResult.body, null, 2) }]
+        };
+      }
+
+      case 'suite_save': {
+        const { name: suiteName, steps: suiteSteps, description: suiteDesc } = args as any;
+        const projId = await dbManager.getActiveProjectId();
+        const suiteId = await dbManager.saveTestSuite(projId, suiteName, suiteSteps, suiteDesc);
+        return { content: [{ type: 'text', text: `Test suite "${suiteName}" saved with ID: ${suiteId}.` }] };
+      }
+
+      case 'suite_load': {
+        const { suiteId } = args as any;
+        const suite = await dbManager.loadTestSuite(suiteId);
+        if (!suite) {
+          return { isError: true, content: [{ type: 'text', text: `Suite ID ${suiteId} not found.` }] };
+        }
+        const startTime = Date.now();
+        const state = await dbManager.getActiveProjectAndEnv();
+        const env = await dbManager.getEnvironmentById(state.envId);
+        if (!env) throw new Error('Active environment configs not loaded.');
+        const variables = JSON.parse(env.variables || '{}');
+        const stepResults = await executeSuiteSteps(suite.steps, variables, state);
+        const endTime = Date.now();
+        const passed = stepResults.every(s => !s.error && (!s.assertionReport || s.assertionReport.passed));
+        const suiteResult: TestSuiteResult = { suiteName: suite.name, passed, steps: stepResults, startTime, endTime };
+        const mdReport = TestReporter.generateMarkdown(suiteResult);
+        return { content: [{ type: 'text', text: mdReport }] };
+      }
+
+      case 'suite_list': {
+        const projId = await dbManager.getActiveProjectId();
+        const suites = await dbManager.listTestSuites(projId);
+        if (suites.length === 0) {
+          return { content: [{ type: 'text', text: 'No saved test suites found in active project.' }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(suites, null, 2) }] };
+      }
+
+      case 'suite_delete': {
+        const { suiteId } = args as any;
+        await dbManager.deleteTestSuite(suiteId);
+        return { content: [{ type: 'text', text: `Test suite ID ${suiteId} deleted.` }] };
+      }
+
+      case 'history_export': {
+        const { projectId } = args as any;
+        const exportData = await dbManager.exportHistory(projectId);
+        return { content: [{ type: 'text', text: JSON.stringify(exportData, null, 2) }] };
+      }
+
+      case 'env_export': {
+        const { environmentId } = args as any;
+        const envData = await dbManager.exportEnvironment(environmentId);
+        return { content: [{ type: 'text', text: JSON.stringify(envData, null, 2) }] };
+      }
+
+      case 'env_import': {
+        const { data, projectId } = args as any;
+        const targetProjId = projectId || await dbManager.getActiveProjectId();
+        const newEnvId = await dbManager.importEnvironment(targetProjId, data);
+        return { content: [{ type: 'text', text: `Environment "${data.name}" imported with ID: ${newEnvId} under project ID: ${targetProjId}.` }] };
+      }
+
+      case 'project_export': {
+        const { projectId } = args as any;
+        const projData = await dbManager.exportProject(projectId);
+        return { content: [{ type: 'text', text: JSON.stringify(projData, null, 2) }] };
+      }
+
+      case 'project_import': {
+        const { data } = args as any;
+        const newProjId = await dbManager.importProject(data);
+        return { content: [{ type: 'text', text: `Project "${data.name}" imported with ID: ${newProjId} including ${data.environments?.length || 0} environments.` }] };
+      }
+
+      case 'postman_import': {
+        const { filePath: pmPath } = args as any;
+        const pmContent = await fs.readFile(pmPath, 'utf8');
+        const pmJson = JSON.parse(pmContent);
+        if (pmJson.info?.schema && !pmJson.info.schema.includes('collection')) {
+          throw new Error('Unsupported Postman format. Only Collection v2 is supported.');
+        }
+        let md = `# 📬 Postman Collection: ${pmJson.info?.name || 'Untitled'}\n\n`;
+        md += `> **Description:** ${pmJson.info?.description || 'N/A'}\n\n`;
+        const items = pmJson.item || [];
+        for (const item of items) {
+          if (item.request) {
+            const req = item.request;
+            const method = (req.method || 'GET').toUpperCase();
+            const urlObj = req.url;
+            const fullUrl = typeof urlObj === 'string' ? urlObj : (urlObj?.raw || (urlObj?.path?.join('/') || ''));
+            md += `### ${item.name}\n`;
+            md += `- **Method:** \`${method}\` | **URL:** \`${fullUrl}\`\n`;
+            if (req.header && req.header.length > 0) {
+              const headers = req.header.filter((h: any) => h.key).map((h: any) => `${h.key}: ${h.value}`).join(', ');
+              md += `- **Headers:** ${headers}\n`;
+            }
+            if (req.body?.raw) md += `- **Body:**\n\`\`\`\n${req.body.raw}\n\`\`\`\n`;
+            md += `\n`;
+          } else if (item.item) {
+            // Folder with sub-items
+            md += `### 📂 ${item.name}\n\n`;
+            for (const subItem of item.item) {
+              if (subItem.request) {
+                const req = subItem.request;
+                const method = (req.method || 'GET').toUpperCase();
+                const urlObj = req.url;
+                const fullUrl = typeof urlObj === 'string' ? urlObj : (urlObj?.raw || '');
+                md += `- **${subItem.name}:** \`${method}\` \`${fullUrl}\`\n`;
+              }
+            }
+            md += `\n`;
+          }
+        }
+        return { content: [{ type: 'text', text: md }] };
+      }
+
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }
   } catch (err: any) {
+    logger.toolCall(name, Date.now() - toolStart, false);
+    logger.error('Server', `Tool "${name}" failed: ${err.message}`);
     return {
       isError: true,
       content: [{ type: 'text', text: `Tool Execution Error: ${err.message}` }]
@@ -924,7 +1413,7 @@ async function main() {
   await dbManager.initialize();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('postmcp Server running on SQLite unified database stdio transport');
+  logger.info('Server', `postmcp v1.1.0 started`);
 }
 
 main().catch((error) => {

@@ -16,11 +16,12 @@ We have successfully migrated the **postmcp** backend from standard JSON files t
 
 ## 🗄️ SQLite Database Schema
 
-The database uses 5 interconnected tables:
+The database uses 6 interconnected tables:
 - `projects`: Configures separate workspace boundaries.
-- `environments`: Holds variables, cookies, headers, endpoints, and credentials per environment (owned by a project).
-- `auth_cache`: Handles OAuth2 Client Credentials dynamic token cache and expiration dates.
+- `environments`: Holds variables, cookies, headers, endpoints, credentials, and default timeout per environment (owned by a project).
+- `auth_cache`: Handles OAuth2 token cache (supports client_credentials and password grants) and expiration dates.
 - `history`: Sequential audit logs of all executed HTTP requests and responses.
+- `test_suites`: Persisted test suites for reuse across sessions.
 - `app_state`: Persists active states, such as active project ID, active environment ID, and outgoing domain allowlists.
 
 ---
@@ -36,22 +37,34 @@ The database uses 5 interconnected tables:
 - **`project_switch`**: Switch active workspace.
   - Parameters: `projectId`
 - **`project_list`**: Lists all projects.
+- **`project_rename`**: Rename a project.
+  - Parameters: `projectId`, `name`
 - **`project_delete`**: Delete a project (cascades and deletes its environments, credentials, and test history).
   - Parameters: `projectId`
 
 ### 3. Environment Profile Management (`env_*`)
 - **`env_configure`**: Configure settings inside the active project.
-  - Parameters: `name` (dev/prod), `baseUrl`, `headers`, `cookies`, `variables`, `authType` (none/bearer/apiKey/oauth2), `authToken`, `apiKeyHeaderName`, `oauth2Config`.
+  - Parameters: `name` (dev/prod), `baseUrl`, `headers`, `cookies`, `variables`, `authType` (none/bearer/apiKey/oauth2), `authToken`, `apiKeyHeaderName`, `timeout`, `oauth2Config` (client_credentials or password grant).
 - **`env_switch`**: Switch active environment.
   - Parameters: `environmentId`
 - **`env_list`**: Lists environments belonging to active project (identifies active env and redacts secrets).
+- **`env_rename`**: Rename an environment.
+  - Parameters: `environmentId`, `name`
 - **`env_delete`**: Delete environment profile.
   - Parameters: `environmentId`
 - **`env_set_variable`**: Store variable key-value inside the active environment configuration (resolvable in requests via `{{variableName}}` syntax).
   - Parameters: `key`, `value`
+- **`env_get_variable`**: Get a specific variable value.
+  - Parameters: `key`
+- **`env_delete_variable`**: Delete a variable.
+  - Parameters: `key`
+- **`env_list_variables`**: List all variables in the active environment.
+- **`env_set_allowlist`**: Set safe domain allowlist.
+  - Parameters: `domains`
+- **`env_get_allowlist`**: Get current allowlist configuration.
 
 ### 4. HTTP Request (`http_request`)
-Sends a request, evaluates assertions, filters outputs, and audits details into `history`.
+Sends a request, evaluates assertions, filters outputs, and audits details into `history`. Supports any HTTP method and file uploads.
 ```json
 {
   "url": "/api/users/1",
@@ -62,25 +75,50 @@ Sends a request, evaluates assertions, filters outputs, and audits details into 
 }
 ```
 
-### 5. WebSocket Testing (`ws_*`)
+### 5. GraphQL Request (`graphql_request`)
+Sends a GraphQL query/mutation with variables and operation name support.
+```json
+{
+  "url": "/graphql",
+  "query": "query { users { id name } }"
+}
+```
+
+### 6. WebSocket Testing (`ws_*`)
 Initiates websocket connects, sends raw text/JSON messages, and polls buffered queues.
 - `ws_connect`, `ws_send`, `ws_read` (supports wait regex), `ws_close`, `ws_list`.
 
-### 6. History and Comparison (`history_*`)
+### 7. Test Suite Persistence (`suite_*`)
+- **`suite_save`**: Save a test suite to the database for reuse.
+- **`suite_load`**: Load and execute a saved test suite.
+- **`suite_list`**: List saved test suites.
+- **`suite_delete`**: Delete a saved test suite.
+
+### 8. History and Comparison (`history_*`)
 - **`history_list`**: Lists request execution logs.
-  - Parameters: `limit`, `offset`, `environmentId` (optional)
+  - Parameters: `limit`, `offset`, `environmentId`, `method`, `statusCode`, `urlKeyword`, `dateFrom`, `dateTo`
 - **`history_get`**: Fetch details of a specific request audit log by ID (shows headers, body sent, response body).
   - Parameters: `id`
-- **`history_compare`**: Computes diffs between two requests.
-  - Parameters: `id1`, `id2`
+- **`history_compare`**: Computes diffs between two requests (supports `table` and `unified` format).
+  - Parameters: `id1`, `id2`, `format`
+- **`history_clear`**: Clear history logs.
+- **`history_export`**: Export history as JSON.
 
-### 7. Database Maintenance (`db_*`)
+### 9. Database Maintenance (`db_*`)
 - **`db_status`**: Get database file path, file size in KB, and table counts.
-- **`db_reset`**: **DANGER**: Perform a factory reset. This closes the database, unlinks the file, and re-initializes a fresh database schema.
+- **`db_reset`**: **DANGER**: Perform a factory reset (requires `confirm: true`).
 
-### 8. Swagger/OpenAPI Import (`swagger_import`)
-- **`swagger_import`**: Read local JSON/YAML file configurations or fetch specs from a URL. Resolves and translates specifications into structural API Markdown specifications.
+### 10. Swagger/OpenAPI Import (`swagger_import`)
+- **`swagger_import`**: Read local JSON/YAML file configurations or fetch specs from a URL. Now includes response status codes and response body schemas in the generated Markdown.
   - Parameters: `url`, `filePath`
+
+### 11. Postman Collection Import (`postman_import`)
+- **`postman_import`**: Import a Postman Collection v2 JSON file and generate a Markdown API reference.
+  - Parameters: `filePath`
+
+### 12. Environment & Project Export/Import
+- **`env_export`** / **`env_import`**: Export/import environment configurations as portable JSON.
+- **`project_export`** / **`project_import`**: Export/import projects (including all environments) as portable JSON.
 
 #### Example Comparison Diff Output
 ```markdown
@@ -111,4 +149,4 @@ Run the integration test suite:
 npx tsx src/test/runTests.ts
 ```
 
-All 22 integration checks verify project operations, configuration states, history logging, credentials redaction, response filters, and JSON comparisons.
+All 30 integration checks verify project operations, configuration states, history logging, credentials redaction, response filters, JSON comparisons, WebSocket persistence, database maintenance, and Swagger imports.

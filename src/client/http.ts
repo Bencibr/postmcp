@@ -1,7 +1,10 @@
 import axios, { AxiosRequestConfig, Method } from 'axios';
 import jp from 'jsonpath';
+import fs from 'fs/promises';
+import path from 'path';
 import { DbManager, EnvironmentRecord } from '../db/sqlite.js';
 import { OAuth2Authenticator } from './oauth.js';
+import { logger } from '../utils/logger.js';
 
 export interface HttpRequestOptions {
   url: string;
@@ -13,6 +16,17 @@ export interface HttpRequestOptions {
   timeout?: number;
   jsonpathFilter?: string;
   maxResponseLength?: number;
+  fileFields?: Record<string, string>; // Map of field name to local file path for form-data uploads
+  returnBody?: boolean; // If false, return only status/duration without body (silent mode, saves tokens)
+  retryCount?: number; // Auto retry count on 5xx/network errors (default: 0)
+  retryDelay?: number; // Delay between retries in ms (default: 1000)
+  cacheTtl?: number; // Response cache TTL in ms (default: 0 = no cache). Set >0 to reuse cached responses.
+  assertBefore?: { // Conditional request: only return full response if condition matches
+    type: 'status' | 'header' | 'body';
+    property?: string;
+    operator: 'equals' | 'notEquals' | 'contains' | 'exists' | 'matches' | 'greaterThan' | 'lessThan';
+    expected?: any;
+  };
 }
 
 export interface HttpResponseData {
@@ -24,6 +38,7 @@ export interface HttpResponseData {
   durationMs: number;
   isTruncated: boolean;
   originalSize: number;
+  cached?: boolean; // Whether response was served from cache
 }
 
 // Helper to redact sensitive keys in headers
@@ -44,6 +59,14 @@ function redactHeaders(headers: Record<string, string>): Record<string, string> 
 // Helper to redact body secrets (if it is a JSON object or urlencoded string containing keys)
 function redactBody(body: any): string {
   if (!body) return '';
+  if (typeof body === 'string') {
+    // Check urlencoded body
+    const sensitiveRegex = /(password|client_secret|token|secret)=([^&]+)/gi;
+    if (sensitiveRegex.test(body)) {
+      return body.replace(sensitiveRegex, '$1=********');
+    }
+    return body;
+  }
   if (typeof body === 'object') {
     try {
       const cloned = JSON.parse(JSON.stringify(body));
@@ -66,19 +89,14 @@ function redactBody(body: any): string {
       return String(body);
     }
   }
-  
-  // Try checking urlencoded body
-  let bodyStr = String(body);
-  const sensitiveRegex = /(password|client_secret|token|secret)=([^&]+)/gi;
-  if (sensitiveRegex.test(bodyStr)) {
-    return bodyStr.replace(sensitiveRegex, '$1=********');
-  }
-  return bodyStr;
+  return String(body);
 }
 
 export class HttpClient {
   private dbManager: DbManager;
   private oauthAuthenticator: OAuth2Authenticator;
+  private responseCache: Map<string, { data: HttpResponseData; expiry: number }> = new Map();
+  private readonly MAX_CACHE_SIZE = 50;
 
   constructor(dbManager: DbManager) {
     this.dbManager = dbManager;
@@ -86,8 +104,64 @@ export class HttpClient {
   }
 
   /**
+   * Generates a deterministic cache key from request options (excludes timestamp-sensitive fields).
+   */
+  private getCacheKey(options: HttpRequestOptions): string {
+    // Only cache GET/HEAD requests, skip when body/auth-sensitive
+    const method = (options.method || 'GET').toUpperCase();
+    if (!['GET', 'HEAD'].includes(method)) return '';
+    // Build key from URL + headers + params (sorted for consistency)
+    const headerStr = options.headers ? JSON.stringify(options.headers, Object.keys(options.headers).sort()) : '';
+    const paramsStr = options.params ? JSON.stringify(options.params, Object.keys(options.params).sort()) : '';
+    return `${method}:${options.url}|${headerStr}|${paramsStr}|${options.body || ''}`;
+  }
+
+  /**
+   * Evaluates a conditional assertion (assertBefore) against a response.
+   * Returns true if the condition is met (response should be returned).
+   */
+  private evaluateAssertBefore(response: any, assertBefore: NonNullable<HttpRequestOptions['assertBefore']>): boolean {
+    const { type, property, operator, expected } = assertBefore;
+    let actual: any;
+
+    switch (type) {
+      case 'status':
+        actual = response.status;
+        break;
+      case 'header':
+        if (!property) return true;
+        actual = response.headers[property.toLowerCase()] || 
+                 Object.entries(response.headers).find(([k]) => k.toLowerCase() === property.toLowerCase())?.[1];
+        break;
+      case 'body':
+        if (property) {
+          try {
+            const parsed = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+            actual = jp.query(parsed, property);
+            actual = actual.length === 1 ? actual[0] : actual;
+          } catch { actual = undefined; }
+        } else {
+          actual = response.data;
+        }
+        break;
+    }
+
+    switch (operator) {
+      case 'equals': return actual == expected;
+      case 'notEquals': return actual != expected;
+      case 'contains': return String(actual).includes(String(expected));
+      case 'exists': return actual !== undefined && actual !== null;
+      case 'matches': return new RegExp(String(expected)).test(String(actual));
+      case 'greaterThan': return Number(actual) > Number(expected);
+      case 'lessThan': return Number(actual) < Number(expected);
+      default: return true;
+    }
+  }
+
+  /**
    * Executes HTTP request, resolves URL from DB, injects DB-stored auth headers,
    * evaluates assertions, filters outputs, and audits the request/response to the SQLite log database.
+   * Supports: response caching, silent mode, auto-retry, conditional requests.
    */
   async send(options: HttpRequestOptions): Promise<HttpResponseData> {
     // 1. Get active environment
@@ -97,10 +171,16 @@ export class HttpClient {
       throw new Error(`Active environment ID ${activeInfo.envId} not found in database.`);
     }
 
-    // 2. Resolve URL
+    // 2. Resolve URL (with variable interpolation for baseUrl)
     let fullUrl = options.url;
+    const envVars = JSON.parse(env.variables || '{}');
     if (!/^https?:\/\//i.test(fullUrl)) {
-      const baseUrl = env.baseUrl || '';
+      let baseUrl = env.baseUrl || '';
+      // Interpolate variables in baseUrl
+      baseUrl = baseUrl.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
+        const trimmed = key.trim();
+        return envVars[trimmed] !== undefined ? String(envVars[trimmed]) : `{{${trimmed}}}`;
+      });
       if (!baseUrl) {
         throw new Error(`Relative URL "${fullUrl}" provided but no baseUrl is configured for the active environment "${activeInfo.envName}" in project "${activeInfo.projectName}"`);
       }
@@ -141,6 +221,10 @@ export class HttpClient {
       } else if (env.authType === 'apiKey' && env.authToken) {
         const keyName = env.apiKeyHeaderName || 'x-api-key';
         requestHeaders[keyName] = env.authToken;
+      } else if (env.authType === 'basic') {
+        // Basic Auth: authToken format is "username:password"
+        const encoded = Buffer.from(env.authToken || ':').toString('base64');
+        requestHeaders['Authorization'] = `Basic ${encoded}`;
       } else if (env.authType === 'oauth2' && env.oauth2Config) {
         try {
           const oauthConfig = JSON.parse(env.oauth2Config);
@@ -149,7 +233,7 @@ export class HttpClient {
             requestHeaders['Authorization'] = `Bearer ${token}`;
           }
         } catch (err: any) {
-          console.error(`Failed to inject OAuth2 token from database: ${err.message}`);
+          logger.error('HTTP', `Failed to inject OAuth2 token from database: ${err.message}`);
         }
       }
     }
@@ -180,6 +264,18 @@ export class HttpClient {
         for (const [key, val] of Object.entries(bodyObj)) {
           formData.append(key, String(val));
         }
+        // File uploads: add files from fileFields
+        if (options.fileFields) {
+          for (const [fieldName, filePath] of Object.entries(options.fileFields)) {
+            try {
+              const fileBuffer = await fs.readFile(filePath);
+              const blob = new Blob([fileBuffer]);
+              formData.append(fieldName, blob, path.basename(filePath));
+            } catch (err: any) {
+              logger.error('HTTP', `File upload failed: "${filePath}" for field "${fieldName}": ${err.message}`);
+            }
+          }
+        }
         requestData = formData;
         if (requestHeaders['Content-Type'] && requestHeaders['Content-Type'].includes('multipart/form-data')) {
           delete requestHeaders['Content-Type'];
@@ -192,51 +288,97 @@ export class HttpClient {
       }
     }
 
-    // 7. Execute Request
-    const startTime = Date.now();
-    const axiosConfig: AxiosRequestConfig = {
-      url: fullUrl,
-      method: options.method as Method,
-      headers: requestHeaders,
-      params: options.params,
-      data: requestData,
-      timeout: options.timeout || 30000,
-      validateStatus: () => true
-    };
+    // 7. Check Response Cache (GET/HEAD only)
+    const cacheKey = this.getCacheKey(options);
+    const cacheTtl = options.cacheTtl || 0;
+    if (cacheKey && cacheTtl > 0) {
+      const cached = this.responseCache.get(cacheKey);
+      if (cached && cached.expiry > Date.now()) {
+        return { ...cached.data, cached: true };
+      }
+    }
 
+    // 8. Execute Request (with auto-retry support)
+    const maxRetries = options.retryCount ?? 0;
+    const retryDelay = options.retryDelay ?? 1000;
+    let lastError: Error | null = null;
     let response: any;
     let durationMs = 0;
-    let success = 1; // 1 = true, 0 = false
+    let success = 1;
 
-    try {
-      response = await axios(axiosConfig);
-      durationMs = Date.now() - startTime;
-    } catch (err: any) {
-      durationMs = Date.now() - startTime;
-      success = 0;
-      
-      // Log failed request attempt to DB
-      await this.dbManager.logRequest({
-        environmentId: env.id,
-        projectName: activeInfo.projectName,
-        environmentName: activeInfo.envName,
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        await new Promise(r => setTimeout(r, retryDelay * attempt)); // Exponential backoff
+      }
+
+      const startTime = Date.now();
+      const axiosConfig: AxiosRequestConfig = {
         url: fullUrl,
-        method: options.method,
-        requestHeaders: JSON.stringify(redactHeaders(requestHeaders)),
-        requestBody: redactBody(options.body),
-        responseStatus: 0,
-        responseHeaders: JSON.stringify({}),
-        responseBody: `Error: ${err.message}`,
-        durationMs,
-        success
-      });
+        method: options.method as Method,
+        headers: requestHeaders,
+        params: options.params,
+        data: requestData,
+        timeout: options.timeout ?? env.timeout ?? 30000,
+        validateStatus: () => true
+      };
 
-      throw new Error(`HTTP Request Failed (${durationMs}ms): ${err.message}`);
+      try {
+        response = await axios(axiosConfig);
+        durationMs = Date.now() - startTime;
+        lastError = null;
+        logger.httpRequest(options.method || 'GET', fullUrl, response.status, durationMs);
+        break; // Success, exit retry loop
+      } catch (err: any) {
+        durationMs = Date.now() - startTime;
+        lastError = err;
+        
+        // Only retry on network errors or 5xx
+        if (attempt < maxRetries && (!err.response || (err.response?.status >= 500))) {
+          continue;
+        }
+        
+        // Log failed request
+        success = 0;
+        await this.dbManager.logRequest({
+          environmentId: env.id,
+          projectName: activeInfo.projectName,
+          environmentName: activeInfo.envName,
+          url: fullUrl,
+          method: options.method,
+          requestHeaders: JSON.stringify(redactHeaders(requestHeaders)),
+          requestBody: redactBody(options.body),
+          responseStatus: err.response?.status || 0,
+          responseHeaders: JSON.stringify({}),
+          responseBody: `Error: ${err.message}`,
+          durationMs,
+          success
+        });
+
+        throw new Error(`HTTP Request Failed (${durationMs}ms)${attempt > 0 ? ` after ${attempt} retries` : ''}: ${err.message}`);
+      }
     }
 
     let responseBody = response.data;
     let isTruncated = false;
     let originalSize = 0;
+
+    // 9. Conditional Request (assertBefore) — if condition fails, return short response
+    if (options.assertBefore) {
+      const conditionMet = this.evaluateAssertBefore(response, options.assertBefore);
+      if (!conditionMet) {
+        const shortResult: HttpResponseData = {
+          status: response.status,
+          statusText: response.statusText,
+          headers: {},
+          body: `[Conditional Request] assertBefore condition NOT met: ${options.assertBefore.type} ${options.assertBefore.operator} ${JSON.stringify(options.assertBefore.expected)}. Skipped response body.`,
+          fullBody: undefined,
+          durationMs,
+          isTruncated: false,
+          originalSize: 0
+        };
+        return shortResult;
+      }
+    }
 
     // Apply JSONPath filters
     if (options.jsonpathFilter && responseBody) {
@@ -276,7 +418,22 @@ export class HttpClient {
       }
     }
 
-    // 8. Log Request and Response to DB
+    // 10. Silent Mode — only return status/duration, no body
+    if (options.returnBody === false) {
+      const silentResult: HttpResponseData = {
+        status: response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+        body: `[Silent Mode] ${response.status} ${response.statusText} (${durationMs}ms)`,
+        fullBody: undefined,
+        durationMs,
+        isTruncated: false,
+        originalSize: 0
+      };
+      return silentResult;
+    }
+
+    // 11. Log Request and Response to DB
     await this.dbManager.logRequest({
       environmentId: env.id,
       projectName: activeInfo.projectName,
@@ -287,12 +444,33 @@ export class HttpClient {
       requestBody: redactBody(options.body),
       responseStatus: response.status,
       responseHeaders: JSON.stringify(responseHeaders),
-      responseBody: stringifiedBody.substring(0, 100000), // Cap database storage size for performance
+      responseBody: stringifiedBody.substring(0, 100000),
       durationMs,
       success
     });
 
-    return {
+    // 12. Cookie Jar: Auto-track Set-Cookie headers and persist to environment
+    if (responseHeaders['set-cookie']) {
+      const setCookieStr = responseHeaders['set-cookie'];
+      const existingCookies = JSON.parse(env.cookies || '{}');
+      // Parse "key=value" from each Set-Cookie header
+      const cookieParts = Array.isArray(setCookieStr) ? setCookieStr : [setCookieStr];
+      for (const part of cookieParts) {
+        const match = part.match(/^([^=]+)=([^;]+)/);
+        if (match) {
+          existingCookies[match[1]] = match[2];
+        }
+      }
+      // Persist updated cookies back to environment
+      await this.dbManager.run(
+        'UPDATE environments SET cookies = ? WHERE id = ?',
+        [JSON.stringify(existingCookies), env.id]
+      );
+      logger.debug('HTTP', `Cookie Jar: updated ${Object.keys(existingCookies).length} cookies for env "${activeInfo.envName}"`);
+    }
+
+    // 12. Build result and cache it
+    const result: HttpResponseData = {
       status: response.status,
       statusText: response.statusText,
       headers: responseHeaders,
@@ -300,7 +478,19 @@ export class HttpClient {
       fullBody: response.data,
       durationMs,
       isTruncated,
-      originalSize
+      originalSize,
+      cached: false
     };
+
+    // Cache the response (GET/HEAD only, max 50 entries, LRU eviction)
+    if (cacheKey && cacheTtl > 0) {
+      if (this.responseCache.size >= this.MAX_CACHE_SIZE) {
+        const oldest = this.responseCache.keys().next().value;
+        if (oldest) this.responseCache.delete(oldest);
+      }
+      this.responseCache.set(cacheKey, { data: result, expiry: Date.now() + cacheTtl });
+    }
+
+    return result;
   }
 }

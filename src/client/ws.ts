@@ -38,10 +38,20 @@ export class WebSocketManager {
       throw new Error(`Active environment ID ${activeInfo.envId} not found in database.`);
     }
 
-    // 2. Resolve URL
+    // 2. Resolve URL (with variable interpolation for baseUrl)
     let fullUrl = url;
-    if (!/^wss?:\/\//i.test(fullUrl)) {
-      const baseUrl = env.baseUrl || '';
+    if (/^https?:\/\//i.test(fullUrl)) {
+      // Convert http(s):// to ws(s):// for WebSocket connections
+      fullUrl = fullUrl.replace(/^http/i, 'ws');
+    } else if (!/^wss?:\/\//i.test(fullUrl)) {
+      // Relative path — resolve against active environment's baseUrl
+      let baseUrl = env.baseUrl || '';
+      const envVars = JSON.parse(env.variables || '{}');
+      // Interpolate variables in baseUrl
+      baseUrl = baseUrl.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
+        const trimmed = key.trim();
+        return envVars[trimmed] !== undefined ? String(envVars[trimmed]) : `{{${trimmed}}}`;
+      });
       if (!baseUrl) {
         throw new Error(`Relative WS URL "${fullUrl}" provided but no baseUrl is configured for the active environment "${activeInfo.envName}" in project "${activeInfo.projectName}"`);
       }
@@ -152,11 +162,13 @@ export class WebSocketManager {
 
       const onError = (err: Error) => {
         cleanup();
+        this.connections.delete(connectionId);
         reject(new Error(`WebSocket connection failed to "${fullUrl}": ${err.message}`));
       };
 
       const onClose = (code: number, reason: string) => {
         cleanup();
+        this.connections.delete(connectionId);
         reject(new Error(`WebSocket connection to "${fullUrl}" closed during handshake. Code: ${code}, Reason: ${reason}`));
       };
 
