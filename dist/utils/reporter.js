@@ -14,25 +14,25 @@ export class TestReporter {
         }).length;
         const failedSteps = totalSteps - passedSteps;
         const passPercentage = totalSteps > 0 ? Math.round((passedSteps / totalSteps) * 100) : 100;
-        let md = `## 📊 Test Suite Report: ${result.suiteName}\n\n`;
+        const parts = [];
+        parts.push(`## 📊 Test Suite Report: ${result.suiteName}\n\n`);
         // Alert badge for status
         if (result.passed) {
-            md += `> [!NOTE]\n> **Status:** ✅ PASSED | **Success Rate:** ${passPercentage}% (${passedSteps}/${totalSteps} steps passed)\n\n`;
+            parts.push(`> [!NOTE]\n> **Status:** ✅ PASSED | **Success Rate:** ${passPercentage}% (${passedSteps}/${totalSteps} steps passed)\n\n`);
         }
         else {
-            md += `> [!WARNING]\n> **Status:** ❌ FAILED | **Success Rate:** ${passPercentage}% (${passedSteps}/${totalSteps} steps passed)\n\n`;
+            parts.push(`> [!WARNING]\n> **Status:** ❌ FAILED | **Success Rate:** ${passPercentage}% (${passedSteps}/${totalSteps} steps passed)\n\n`);
         }
         // Summary details
-        md += `| Metric | Value |\n`;
-        md += `| :--- | :--- |\n`;
-        md += `| **Start Time** | ${new Date(result.startTime).toISOString()} |\n`;
-        md += `| **Duration** | ${durationTotal} ms |\n`;
-        md += `| **Total Steps** | ${totalSteps} |\n`;
-        md += `| **Passed** | ${passedSteps} |\n`;
-        md += `| **Failed** | ${failedSteps} |\n\n`;
-        md += `### 📋 Step-by-Step Breakdown\n\n`;
-        md += `| Step Name | Method | URL | Status Code | Duration | Assertions | Result |\n`;
-        md += `| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n`;
+        parts.push(`| Metric | Value |\n| :--- | :--- |\n`);
+        parts.push(`| **Start Time** | ${new Date(result.startTime).toISOString()} |\n`);
+        parts.push(`| **Duration** | ${durationTotal} ms |\n`);
+        parts.push(`| **Total Steps** | ${totalSteps} |\n`);
+        parts.push(`| **Passed** | ${passedSteps} |\n`);
+        parts.push(`| **Failed** | ${failedSteps} |\n\n`);
+        parts.push(`### 📋 Step-by-Step Breakdown\n\n`);
+        parts.push(`| Step Name | Method | URL | Status Code | Duration | Assertions | Result |\n`);
+        parts.push(`| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n`);
         for (const step of result.steps) {
             const methodBadge = `\`${step.method.toUpperCase()}\``;
             const statusBadge = step.responseStatus !== undefined
@@ -46,36 +46,42 @@ export class TestReporter {
             }
             let stepResult = '❌ Error';
             if (!step.error) {
-                if (!step.assertionReport || step.assertionReport.passed) {
-                    stepResult = '✅ Pass';
-                }
-                else {
-                    stepResult = '❌ Fail';
-                }
+                stepResult = (!step.assertionReport || step.assertionReport.passed) ? '✅ Pass' : '❌ Fail';
             }
-            md += `| ${step.stepName} | ${methodBadge} | \`${step.url}\` | ${statusBadge} | ${durationText} | ${assertionSummary} | ${stepResult} |\n`;
+            parts.push(`| ${step.stepName} | ${methodBadge} | \`${step.url}\` | ${statusBadge} | ${durationText} | ${assertionSummary} | ${stepResult} |\n`);
         }
-        md += '\n';
+        parts.push('\n');
         // Detailed failure information
         const failures = result.steps.filter(s => s.error || (s.assertionReport && !s.assertionReport.passed));
         if (failures.length > 0) {
-            md += `### 🔍 Failure Details\n\n`;
+            parts.push(`### 🔍 Failure Details\n\n`);
             for (const step of failures) {
-                md += `#### ❌ Step: ${step.stepName} (${step.method.toUpperCase()} ${step.url})\n`;
-                if (step.error) {
-                    md += `> [!CAUTION]\n> **Execution Error:** ${step.error}\n\n`;
-                }
+                parts.push(`#### ❌ Step: ${step.stepName} (${step.method.toUpperCase()} ${step.url})\n`);
+                if (step.error)
+                    parts.push(`> [!CAUTION]\n> **Execution Error:** ${step.error}\n\n`);
                 if (step.assertionReport && !step.assertionReport.passed) {
-                    md += `**Failed Assertions:**\n`;
+                    parts.push(`**Failed Assertions:**\n`);
                     for (const res of step.assertionReport.results) {
                         if (!res.passed) {
-                            md += `- [ ] \`Type: ${res.assertion.type}\` (Property: \`${res.assertion.property || 'none'}\`): ${res.message}\n`;
+                            parts.push(`- [ ] \`Type: ${res.assertion.type}\` (Property: \`${res.assertion.property || 'none'}\`): ${res.message}\n`);
                         }
                     }
-                    md += '\n';
+                    parts.push('\n');
                 }
             }
         }
-        return md;
+        // Variable extraction warnings
+        const stepsWithExtractionErrors = result.steps.filter(s => s.extractionErrors && s.extractionErrors.length > 0);
+        if (stepsWithExtractionErrors.length > 0) {
+            parts.push(`### ⚠️ Variable Extraction Warnings\n\n`);
+            for (const step of stepsWithExtractionErrors) {
+                parts.push(`**Step: ${step.stepName}**\n`);
+                for (const err of step.extractionErrors) {
+                    parts.push(`- ⚠️ ${err}\n`);
+                }
+                parts.push('\n');
+            }
+        }
+        return parts.join('');
     }
 }

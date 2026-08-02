@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import { DbManager } from '../db/sqlite.js';
+import { createSafeLookup } from '../utils/security.js';
 
 export interface WsMessage {
   direction: 'incoming' | 'outgoing';
@@ -61,10 +62,9 @@ export class WebSocketManager {
       fullUrl = `${cleanBase}${cleanPath}`;
     }
 
-    // 3. Verify Allowlist
-    if (!(await this.dbManager.isUrlAllowed(fullUrl))) {
-      throw new Error(`Access Denied: The WebSocket URL "${fullUrl}" is not allowed under the current security policy/allowlist.`);
-    }
+    // 3. Verify destination and repeat IP validation during the socket lookup.
+    await this.dbManager.assertUrlAllowed(fullUrl, ['ws:', 'wss:']);
+    const allowlist = await this.dbManager.getAllowlist();
 
     // 4. Setup connection ID
     const connectionId = `ws_${this.nextId++}`;
@@ -104,7 +104,8 @@ export class WebSocketManager {
 
     const socket = new WebSocket(fullUrl, {
       headers: socketHeaders,
-      handshakeTimeout: timeoutMs
+      handshakeTimeout: Math.min(Math.max(1, timeoutMs), 120000),
+      lookup: createSafeLookup(allowlist),
     });
 
     const connState: WsConnectionState = {

@@ -27,6 +27,7 @@ async function main() {
   try { await fs.unlink(dbPath); } catch {}
   const dbC = new DbManager(dbPath);
   await dbC.initialize();
+  await dbC.setAllowlist(['private:localhost']);
 
   try {
     // ===== GROUP 1: Database Abnormal =====

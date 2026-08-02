@@ -16,6 +16,7 @@ async function stressTest() {
 
   const db = new DbManager(dbPath);
   await db.initialize();
+  await db.setAllowlist(['private:localhost']);
   const pId = await db.createProject('StressTest');
   const eId = await db.configureEnvironment(pId, 'dev', {
     baseUrl: 'http://localhost:8094', authType: 'none'

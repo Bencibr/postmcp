@@ -1,6 +1,6 @@
 # postmcp vs Postman: 功能对比与借鉴分析
 
-> 分析日期: 2026-07-09
+> 分析日期: 2026-08-02
 > postmcp v1.1.0 vs Postman (最新版)
 
 ---
@@ -30,10 +30,10 @@
 | | URL 参数管理 | ✅ | ✅ | |
 | | Headers 管理 | ✅ | ✅ | |
 | | Body 类型 (json/urlencoded/form-data/raw) | ✅ | ✅ | |
-| | 文件上传 | ✅ | ✅ | postmcp 需要本地路径 |
+| | 文件上传 | ✅ | ✅ | postmcp 需要本地路径、`confirmFileAccess: true`，并受文件沙箱限制 |
 | | 二进制响应下载 | ❌ | ✅ | |
 | | GraphQL 查询 | ✅ | ✅ | |
-| | Cookie 管理 / Cookie Jar | ⚠️ 从环境注入 | ✅ 自动跟踪 | **可借鉴** |
+| | Cookie 管理 / Cookie Jar | ✅ 自动跟踪 Set-Cookie 并注入后续请求 | ✅ 自动跟踪 | |
 | **认证** | Bearer Token | ✅ | ✅ | |
 | | API Key | ✅ | ✅ | |
 | | OAuth2 Client Credentials | ✅ | ✅ | |
@@ -47,8 +47,8 @@
 | | 变量插值 {{var}} | ✅ | ✅ | |
 | | 环境变量导入/导出 | ✅ | ✅ | |
 | | 全局变量 | ⚠️ 共享环境变量 | ✅ 独立作用域 | |
-| | 动态变量 (随机数/时间戳等) | ❌ | ✅ `$timestamp` | **可借鉴** |
-| | 数据驱动测试 (CSV/JSON) | ❌ | ✅ | **可借鉴** |
+| | 动态变量 (随机数/时间戳等) | ✅ `$timestamp` / `$uuid` / `$random*` | ✅ | |
+| | 数据驱动测试 (CSV/JSON) | ✅ `test_run_suite` | ✅ | |
 | **测试与断言** | 状态码断言 | ✅ | ✅ | |
 | | Header 断言 | ✅ | ✅ | |
 | | JSONPath 断言 | ✅ | ✅ | |
@@ -64,7 +64,7 @@
 | | 集合导出/分享 | ✅ JSON | ✅ JSON + Cloud | |
 | | 集合 Runner | ✅ `test_run_suite` | ✅ Collection Runner | |
 | | 条件分支 (IF-THEN-ELSE) | ❌ | ⚠️ 通过脚本 | |
-| | 数据驱动批量运行 | ❌ | ✅ Runner + CSV | |
+| | 数据驱动批量运行 | ✅ `test_run_suite` + CSV/JSON | ✅ Runner + CSV | |
 | **工作流** | 顺序执行 | ✅ | ✅ | |
 | | 并行执行 | ❌ | ❌ | |
 | | 循环/迭代 | ❌ | ✅ Runner 迭代 | |
@@ -104,30 +104,11 @@
 
 **Postman**: `{{$timestamp}}`, `{{$guid}}`, `{{$randomInt}}`, `{{$randomEmail}}`
 
-**postmcp 现状**: 只有用户自定义变量，没有内置动态变量。
+**postmcp 现状**: 已提供时间戳、UUID、随机数、随机邮箱、随机名称、随机城市和当前日期/时间等内置动态变量。
 
-**建议方案**:
-```typescript
-// 在 interpolate 函数中增加内置动态变量
-function interpolate(target: any, variables: Record<string, any>): any {
-  // 内置动态变量优先级高于用户变量
-  const builtins: Record<string, () => string> = {
-    '$timestamp': () => String(Date.now()),
-    '$isoTimestamp': () => new Date().toISOString(),
-    '$uuid': () => crypto.randomUUID(),
-    '$randomInt': () => String(Math.floor(Math.random() * 10000)),
-    '$randomEmail': () => `user${Math.floor(Math.random() * 10000)}@test.com`,
-  };
-  
-  if (typeof target === 'string') {
-    return target.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
-      const trimmed = key.trim();
-      if (builtins[trimmed]) return builtins[trimmed]();
-      return variables[trimmed] !== undefined ? String(variables[trimmed]) : `{{${trimmed}}}`;
-    });
-  }
-  // ... 其余逻辑
-}
+**使用方式**:
+```json
+{ "url": "/users/{{$uuid}}", "body": "{\"email\":\"{{$randomEmail}}\"}" }
 ```
 
 **效果**: 一行代码，覆盖测试数据生成、时间戳等高频需求。
@@ -165,7 +146,7 @@ function interpolate(target: any, variables: Record<string, any>): any {
 
 **Postman**: 选择集合 → Run → 选择迭代次数和数据文件 → 批量执行。
 
-**postmcp 现状**: `suite_load` 加载已保存套件，但不支持迭代和数据文件。
+**postmcp 现状**: `test_run_suite` 已支持 CSV/JSON 数据源和 `{{row.columnName}}`，`suite_load` 仍不支持独立的迭代次数参数。
 
 **建议**: 
 ```json
@@ -178,27 +159,19 @@ function interpolate(target: any, variables: Record<string, any>): any {
 
 ### P1 — 中等价值、中等实现成本
 
-#### 5️⃣ Cookie Jar 自动管理
+#### 5️⃣ Cookie Jar 自动管理（已实现）
 
 **Postman**: 自动跟踪 Set-Cookie 响应头，在后续请求中自动发送 Cookie。
 
-**postmcp 现状**: Cookie 只能通过 `env_configure` 手动设置，不会自动跟踪。
+**postmcp 现状**: 已自动解析响应中的 `Set-Cookie`，写入当前环境并注入后续请求。登录接口返回 `Set-Cookie: session=abc123` 后，后续请求会自动带上 `Cookie: session=abc123`。
 
-**建议**:
-```typescript
-// 在 httpClient.send() 中增加 Cookie 跟踪
-if (response.headers['set-cookie']) {
-  // 解析并保存到 active environment 的 cookies 字段
-}
-```
-
-这样可以实现：登录接口返回 `Set-Cookie: session=abc123` → 后续请求自动带上 `Cookie: session=abc123`。
-
-#### 6️⃣ 数据驱动测试（DDT）
+#### 6️⃣ 数据驱动测试（DDT，已实现）
 
 **Postman**: Collection Runner 读取 CSV/JSON 数据文件，每行数据运行一次集合。
 
-**建议**:
+`test_run_suite` 已支持相同的 CSV/JSON 数据驱动流程；读取本地文件时需要 `confirmFileAccess: true`，并受文件根目录和大小限制保护。
+
+**当前用法**:
 ```json
 {
   "suiteName": "Bulk User Test",
@@ -262,26 +235,25 @@ postmcp --db-url postgresql://user:pass@host/postmcp
 
 ## 五、借鉴优先级路线图
 
+已完成并从待办中移除：动态变量内置函数、Cookie Jar 自动跟踪、CSV/JSON 数据驱动测试。
+
 ```
 本周可做（P0）:
-  1. 动态变量内置函数 ($timestamp, $uuid, $randomInt)
-  2. 请求/响应 Hook（低配版：内置脚本模板）
+  1. 请求/响应 Hook（低配版：内置脚本模板）
 
 短期规划（P1）:
-  3. Cookie Jar 自动跟踪
-  4. 数据驱动测试 (DDT)
-  5. OAuth2 Device Code Flow
+  2. OAuth2 Device Code Flow
 
 中期规划（P2）:
-  6. Newman 风格 CLI
-  7. 远程数据库（团队协作基础）
-  8. 可视化报告增强
+  3. Newman 风格 CLI
+  4. 远程数据库（团队协作基础）
+  5. 可视化报告增强
 
 长期规划（P3）:
-  9. Pre-request Script Sandbox
-  10. Postman Workspace 级协作
+  6. Pre-request Script Sandbox
+  7. Postman Workspace 级协作
 ```
 
 ---
 
-> **核心结论**: postmcp 不是要复刻 Postman，而是在 AI Agent 场景下提供 Postman 不具备的能力（AI 原生、Token 节省、WS 连接池）。借鉴 Postman 中"无 AI 也能提升效率"的功能——动态变量、Cookie 跟踪、数据驱动——让两者优势叠加。
+> **核心结论**: postmcp 不是要复刻 Postman，而是在 AI Agent 场景下提供 Postman 不具备的能力（AI 原生、Token 节省、WS 连接池）。已完成的动态变量、Cookie 跟踪和数据驱动能力让两者优势叠加，后续重点转向脚本、CLI 和团队协作。

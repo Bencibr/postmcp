@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
+import { createSafeLookup } from '../utils/security.js';
 export class WebSocketManager {
     dbManager;
     connections = new Map();
@@ -17,10 +18,21 @@ export class WebSocketManager {
         if (!env) {
             throw new Error(`Active environment ID ${activeInfo.envId} not found in database.`);
         }
-        // 2. Resolve URL
+        // 2. Resolve URL (with variable interpolation for baseUrl)
         let fullUrl = url;
-        if (!/^wss?:\/\//i.test(fullUrl)) {
-            const baseUrl = env.baseUrl || '';
+        if (/^https?:\/\//i.test(fullUrl)) {
+            // Convert http(s):// to ws(s):// for WebSocket connections
+            fullUrl = fullUrl.replace(/^http/i, 'ws');
+        }
+        else if (!/^wss?:\/\//i.test(fullUrl)) {
+            // Relative path — resolve against active environment's baseUrl
+            let baseUrl = env.baseUrl || '';
+            const envVars = JSON.parse(env.variables || '{}');
+            // Interpolate variables in baseUrl
+            baseUrl = baseUrl.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
+                const trimmed = key.trim();
+                return envVars[trimmed] !== undefined ? String(envVars[trimmed]) : `{{${trimmed}}}`;
+            });
             if (!baseUrl) {
                 throw new Error(`Relative WS URL "${fullUrl}" provided but no baseUrl is configured for the active environment "${activeInfo.envName}" in project "${activeInfo.projectName}"`);
             }
@@ -29,10 +41,9 @@ export class WebSocketManager {
             const cleanPath = fullUrl.startsWith('/') ? fullUrl : `/${fullUrl}`;
             fullUrl = `${cleanBase}${cleanPath}`;
         }
-        // 3. Verify Allowlist
-        if (!(await this.dbManager.isUrlAllowed(fullUrl))) {
-            throw new Error(`Access Denied: The WebSocket URL "${fullUrl}" is not allowed under the current security policy/allowlist.`);
-        }
+        // 3. Verify destination and repeat IP validation during the socket lookup.
+        await this.dbManager.assertUrlAllowed(fullUrl, ['ws:', 'wss:']);
+        const allowlist = await this.dbManager.getAllowlist();
         // 4. Setup connection ID
         const connectionId = `ws_${this.nextId++}`;
         const emitter = new EventEmitter();
@@ -67,7 +78,8 @@ export class WebSocketManager {
         }
         const socket = new WebSocket(fullUrl, {
             headers: socketHeaders,
-            handshakeTimeout: timeoutMs
+            handshakeTimeout: Math.min(Math.max(1, timeoutMs), 120000),
+            lookup: createSafeLookup(allowlist),
         });
         const connState = {
             id: connectionId,
@@ -116,10 +128,12 @@ export class WebSocketManager {
             };
             const onError = (err) => {
                 cleanup();
+                this.connections.delete(connectionId);
                 reject(new Error(`WebSocket connection failed to "${fullUrl}": ${err.message}`));
             };
             const onClose = (code, reason) => {
                 cleanup();
+                this.connections.delete(connectionId);
                 reject(new Error(`WebSocket connection to "${fullUrl}" closed during handshake. Code: ${code}, Reason: ${reason}`));
             };
             connState.emitter.once('open', onOpen);

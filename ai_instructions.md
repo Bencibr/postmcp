@@ -15,12 +15,19 @@ project_create { "name": "MyAPI" }
 // 2. Configure environment (dev with base URL)
 env_configure { "name": "dev", "baseUrl": "https://api.example.com" }
 
-// 3. Send your first request
+// 3. Allow only the API host (an empty allowlist denies all outbound requests)
+env_set_allowlist { "domains": ["api.example.com"] }
+
+// 4. Send your first request
 http_request { "url": "/health", "method": "GET" }
 
-// 4. View the audit log
+// 5. View the audit log
 history_list { "limit": 5 }
 ```
+
+Outbound URLs are denied until their host is explicitly allowlisted. DNS results for non-private entries are also checked against private and reserved address ranges. Use `private:localhost` (or another explicit `private:` entry) only for a trusted internal service.
+
+Local file access is opt-in and sandboxed. `fileFields`, `test_run_suite.dataSource`, `swagger_import.filePath`, and `postman_import` require `confirmFileAccess: true`; files must be inside `POSTMCP_FILE_ROOTS` (default: the project directory), protected credential paths are denied, and the default limit is 10 MiB. `POSTMCP_MAX_FILE_BYTES` can raise the limit up to 100 MiB.
 
 ---
 
@@ -120,6 +127,8 @@ mcp_usage_guide
 
 **`project_delete`**
 - `projectId` (number, required): Cascading delete
+- `expectedProjectName` (string, required): Must exactly match the stored project name
+- `confirm` (boolean, required): Must be `true`
 
 ### 2.3 Environment Management (`env_*`)
 
@@ -146,17 +155,17 @@ mcp_usage_guide
 
 **`env_rename`** — `environmentId`, `name`
 
-**`env_delete`** — `environmentId`
+**`env_delete`** — `environmentId`, `expectedEnvironmentName`, `confirm: true` (the name must exactly match; the default environment cannot be deleted)
 
 **`env_set_variable`** — `key`, `value`
 
-**`env_get_variable`** — `key` → Returns variable value
+**`env_get_variable`** — `key` → Sensitive values are masked by default. Add `includeSecret: true` and `confirmSecret: true` to reveal one.
 
 **`env_delete_variable`** — `key`
 
-**`env_list_variables`** (no args) → Returns all variables
+**`env_list_variables`** (no args) → Returns all variables with sensitive values masked. Add `includeSecrets: true` and `confirmSecrets: true` to reveal them.
 
-**`env_set_allowlist`** — `domains` (string[]): Safe domains. `[]` = allow all
+**`env_set_allowlist`** — `domains` (string[]): Explicit safe hosts or wildcard domains. `[]` = deny all. Use `private:host` only for trusted internal hosts.
 
 **`env_get_allowlist`** (no args) → Returns current allowlist
 
@@ -169,6 +178,7 @@ mcp_usage_guide
 - `params` (object, optional): URL query parameters (e.g. `{"page": "1", "limit": "20"}`)
 - `body` (string, optional): Request body (raw string or stringified JSON)
 - `bodyType` (string, default: `"json"`): `"json"` | `"urlencoded"` | `"form-data"` | `"raw"`
+- `confirmFileAccess` (boolean, required when `fileFields` is used): Must be `true`
 
 **Token-saving parameters:**
 - `jsonpathFilter` (string, optional): Extract specific fields (e.g. `$.data.users[0].id`). Response body is replaced with filtered result
@@ -276,6 +286,7 @@ ws_read { "connectionId": "ws_1", "limit": 5 }
   - `type`: `"csv"` | `"json"`
   - `filePath`: Absolute path to data file
   - Use `{{row.columnName}}` in step fields to reference row data
+- `confirmFileAccess` (boolean, required when `dataSource` is used): Must be `true`
 - `steps` (array, required): Array of step objects
 
 **Each step:**
@@ -316,7 +327,7 @@ Bob,bob@example.com
 
 **`suite_list`** (no args): List saved suites
 
-**`suite_delete`** — `suiteId` (number, required)
+**`suite_delete`** — `suiteId` (number, required), `expectedSuiteName` (exact stored name), `confirm: true`. A suite can only be loaded or deleted from its owning active project.
 
 ### 2.9 History & Audit (`history_*`)
 
@@ -330,7 +341,7 @@ Bob,bob@example.com
 - `id1`, `id2` (numbers, required)
 - `format` (string, optional): `"table"` (default) — Markdown table | `"unified"` — compact diff
 
-**`history_clear`** — `olderThanSeconds` (number, optional)
+**`history_clear`** — `olderThanSeconds` (number, optional), `confirm` (boolean, required: `true`)
 
 **`history_export`** — `projectId` (number, optional): Export as JSON array
 
@@ -339,19 +350,21 @@ Bob,bob@example.com
 **`swagger_import`**
 - `url` (string, optional): Remote OpenAPI spec URL
 - `filePath` (string, optional): Local file path (JSON/YAML)
+- `confirmFileAccess` (boolean, required when `filePath` is used): Must be `true`
 - → Renders Markdown API reference with endpoints, parameters, request bodies, **and response schemas**
 
 **`postman_import`**
 - `filePath` (string, required): Postman Collection v2 JSON file
+- `confirmFileAccess` (boolean, required): Must be `true`
 - → Renders Markdown with all endpoints, methods, headers, body samples (preserves folder structure)
 
-**`env_export`** — `environmentId` (number, required): Portable JSON
+**`env_export`** — `environmentId` (number, required): Portable JSON with secrets masked by default. Add `includeSecrets: true` and `confirmSecrets: true` to include credentials.
 
 **`env_import`**
 - `data` (object, required): Environment JSON (from `env_export`)
 - `projectId` (number, optional): Target project
 
-**`project_export`** — `projectId` (number, required): Project + all environments as JSON
+**`project_export`** — `projectId` (number, required): Project + all environments as JSON, with secrets masked by default. Add `includeSecrets: true` and `confirmSecrets: true` to include credentials.
 
 **`project_import`** — `data` (object, required): Full project JSON
 
@@ -483,7 +496,9 @@ http_request {
 ## 🔒 6. Security & Data Protection
 
 - **Auto-Redaction**: `Authorization`, `Cookie`, `x-api-key` headers and body fields containing `password`, `token`, `secret` are stored as `********` in history
-- **Safe Allowlist**: Use `env_set_allowlist` to restrict outgoing requests to specific domains
+- **Safe Allowlist**: Use `env_set_allowlist` before any network call. Empty denies all; hosts are checked against DNS-resolved private/reserved addresses, redirects are revalidated, and ambient Axios proxy settings cannot bypass the policy.
+- **Local File Sandbox**: Confirmed file reads stay within `POSTMCP_FILE_ROOTS`, reject protected credential paths and non-regular files, and enforce a configurable size limit.
+- **Secret Confirmation**: Environment variable reads, environment/project exports, and destructive tools require explicit confirmation when they expose or remove sensitive data.
 - **DB Permissions**: SQLite file at `~/.postmcp/postmcp.db` has Unix permission `0600` (user-only)
 - **No secrets in stdout**: All MCP communication is JSON-RPC on stdout; logs go to stderr
 
@@ -498,10 +513,10 @@ postmcp is resilient:
 | HTTP connection refused | Throws clear error, logs to history with status 0 |
 | DNS failure | Throws error, no crash |
 | Invalid JSON body | Throws parse error, does not hang |
-| OAuth token failure | Logs warning, request continues without auth (you'll get 401) |
+| OAuth token failure | Fails before the request is sent; no unauthenticated fallback request is made |
 | WebSocket disconnect | Connection removed from pool, next operation returns error |
 | Request timeout | Throws after configured timeout, does not hang |
-| File not found (upload) | Logs error per file, other files still upload |
+| File access denied or not found | Fails before the request is sent; files outside the sandbox are never read |
 | Concurrent DB writes | SQLite WAL mode handles concurrency |
 
 ---
@@ -515,40 +530,40 @@ postmcp is resilient:
 | `project_switch` | Project | projectId | v1.0 |
 | `project_list` | Project | — | v1.0 |
 | `project_rename` | Project | projectId, name | v1.1 |
-| `project_delete` | Project | projectId | v1.0 |
+| `project_delete` | Project | projectId, expectedProjectName, confirm | v1.1 |
 | `env_configure` | Env | name, baseUrl, headers, cookies, variables, authType, authToken, apiKeyHeaderName, timeout, oauth2Config | v1.0 |
 | `env_switch` | Env | environmentId | v1.0 |
 | `env_list` | Env | — | v1.0 |
 | `env_rename` | Env | environmentId, name | v1.1 |
-| `env_delete` | Env | environmentId | v1.0 |
+| `env_delete` | Env | environmentId, expectedEnvironmentName, confirm | v1.1 |
 | `env_set_variable` | Env | key, value | v1.0 |
-| `env_get_variable` | Env | key | v1.1 |
+| `env_get_variable` | Env | key, includeSecret, confirmSecret | v1.1 |
 | `env_delete_variable` | Env | key | v1.1 |
-| `env_list_variables` | Env | — | v1.1 |
-| `env_set_allowlist` | Env | domains | v1.0 |
+| `env_list_variables` | Env | includeSecrets, confirmSecrets | v1.1 |
+| `env_set_allowlist` | Env | domains (empty denies all) | v1.1 |
 | `env_get_allowlist` | Env | — | v1.1 |
-| `http_request` | HTTP | url, method, headers, params, body, bodyType, timeout, jsonpathFilter, fileFields, maxResponseLength, returnBody, retryCount, retryDelay, cacheTtl, assertBefore, assertions | v1.0 |
+| `http_request` | HTTP | url, method, headers, params, body, bodyType, timeout, jsonpathFilter, fileFields, confirmFileAccess, maxResponseLength, returnBody, retryCount, retryDelay, cacheTtl, assertBefore, assertions | v1.1 |
 | `graphql_request` | HTTP | url, query, variables, operationName, headers, timeout | v1.1 |
 | `ws_connect` | WS | url, headers, timeout | v1.0 |
 | `ws_send` | WS | connectionId, message | v1.0 |
 | `ws_read` | WS | connectionId, limit, waitForPattern, timeout | v1.0 |
 | `ws_close` | WS | connectionId | v1.0 |
 | `ws_list` | WS | — | v1.0 |
-| `test_run_suite` | Suite | suiteName, dataSource, steps | v1.0 |
+| `test_run_suite` | Suite | suiteName, dataSource, confirmFileAccess, steps | v1.1 |
 | `suite_save` | Suite | name, steps, description | v1.1 |
 | `suite_load` | Suite | suiteId | v1.1 |
 | `suite_list` | Suite | — | v1.1 |
-| `suite_delete` | Suite | suiteId | v1.1 |
+| `suite_delete` | Suite | suiteId, expectedSuiteName, confirm | v1.1 |
 | `history_list` | History | limit, offset, environmentId, method, statusCode, urlKeyword, dateFrom, dateTo | v1.0 |
 | `history_get` | History | id | v1.0 |
 | `history_compare` | History | id1, id2, format | v1.0 |
-| `history_clear` | History | olderThanSeconds | v1.0 |
+| `history_clear` | History | olderThanSeconds, confirm | v1.1 |
 | `history_export` | History | projectId | v1.1 |
-| `swagger_import` | Import | url, filePath | v1.0 |
-| `postman_import` | Import | filePath | v1.1 |
-| `env_export` | Import/Export | environmentId | v1.1 |
+| `swagger_import` | Import | url, filePath, confirmFileAccess | v1.1 |
+| `postman_import` | Import | filePath, confirmFileAccess | v1.1 |
+| `env_export` | Import/Export | environmentId, includeSecrets, confirmSecrets | v1.1 |
 | `env_import` | Import/Export | data, projectId | v1.1 |
-| `project_export` | Import/Export | projectId | v1.1 |
+| `project_export` | Import/Export | projectId, includeSecrets, confirmSecrets | v1.1 |
 | `project_import` | Import/Export | data | v1.1 |
 | `db_status` | Admin | — | v1.0 |
 | `db_reset` | Admin | confirm (required: true) | v1.0 |

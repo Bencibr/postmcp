@@ -44,6 +44,7 @@ async function runTests() {
 
   const dbManager = new DbManager(tempDbPath);
   await dbManager.initialize();
+  await dbManager.setAllowlist(['private:localhost']);
 
   const httpClient = new HttpClient(dbManager);
   const wsManager = new WebSocketManager(dbManager);
@@ -198,6 +199,7 @@ async function runTests() {
     assert(stats.fileSize > 0, `Database file size is valid: ${stats.fileSize} bytes`);
 
     await dbManager.resetDatabase();
+    await dbManager.setAllowlist(['private:localhost']);
     const newStats = await dbManager.getDatabaseStats();
     assert(newStats.projectsCount === 1, `Factory reset succeeded. Projects count reset to: ${newStats.projectsCount}`);
     const activeInfo = await dbManager.getActiveProjectAndEnv();
@@ -209,12 +211,12 @@ async function runTests() {
     
     // Test Local YAML import
     const yamlPath = path.join(process.cwd(), 'src', 'test', 'mockSwagger.yaml');
-    const yamlDoc = await swaggerParser.importSpec({ filePath: yamlPath });
+    const yamlDoc = await swaggerParser.importSpec({ filePath: yamlPath, confirmFileAccess: true });
     assert(yamlDoc.includes('Mock User API') && yamlDoc.includes('GET') && yamlDoc.includes('/users'), 'Local YAML Swagger spec parsed successfully');
 
     // Test Local JSON import
     const jsonPath = path.join(process.cwd(), 'src', 'test', 'mockSwagger.json');
-    const jsonDoc = await swaggerParser.importSpec({ filePath: jsonPath });
+    const jsonDoc = await swaggerParser.importSpec({ filePath: jsonPath, confirmFileAccess: true });
     assert(jsonDoc.includes('Mock User API Legacy') && jsonDoc.includes('Retrieve all users legacy'), 'Local JSON Swagger spec parsed successfully');
 
     // Test Remote JSON import via URL

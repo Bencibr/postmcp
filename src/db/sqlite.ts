@@ -2,6 +2,7 @@ import sqlite3 from 'sqlite3';
 import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
+import { assertSafeOutboundUrl, redactHeaders, redactSensitiveData } from '../utils/security.js';
 
 export interface OAuth2Config {
   grantType: 'client_credentials' | 'password';
@@ -303,29 +304,21 @@ export class DbManager {
   }
 
   async setAllowlist(domains: string[]): Promise<void> {
-    await this.run("INSERT OR REPLACE INTO app_state (key, value) VALUES ('allowlist', ?)", [JSON.stringify(domains)]);
+    const normalized = Array.from(new Set(domains.map(domain => domain.trim().toLowerCase()).filter(Boolean)));
+    await this.run("INSERT OR REPLACE INTO app_state (key, value) VALUES ('allowlist', ?)", [JSON.stringify(normalized)]);
   }
 
   async isUrlAllowed(urlStr: string): Promise<boolean> {
-    const list = await this.getAllowlist();
-    if (list.length === 0) return true;
     try {
-      const parsedUrl = new URL(urlStr);
-      const hostname = parsedUrl.hostname.toLowerCase();
-      const host = parsedUrl.host.toLowerCase();
-
-      return list.some(allowed => {
-        const clean = allowed.trim().toLowerCase();
-        if (clean === '*' || clean === '') return true;
-        if (clean.startsWith('*.')) {
-          const suffix = clean.substring(2);
-          return hostname === suffix || hostname.endsWith('.' + suffix);
-        }
-        return hostname === clean || host === clean;
-      });
+      await this.assertUrlAllowed(urlStr);
+      return true;
     } catch {
       return false;
     }
+  }
+
+  async assertUrlAllowed(urlStr: string, allowedProtocols: string[] = ['http:', 'https:', 'ws:', 'wss:']): Promise<URL> {
+    return assertSafeOutboundUrl(urlStr, await this.getAllowlist(), allowedProtocols);
   }
 
   // --- PROJECTS CRUD ---
@@ -570,20 +563,25 @@ export class DbManager {
   }
 
   // --- ENVIRONMENT EXPORT/IMPORT ---
-  async exportEnvironment(envId: number): Promise<any> {
+  async exportEnvironment(envId: number, includeSecrets = false): Promise<any> {
     const env = await this.get<EnvironmentRecord>('SELECT * FROM environments WHERE id = ?', [envId]);
     if (!env) throw new Error(`Environment with ID ${envId} not found.`);
+    const headers = JSON.parse(env.headers || '{}');
+    const cookies = JSON.parse(env.cookies || '{}');
+    const variables = JSON.parse(env.variables || '{}');
+    const oauth2Config = env.oauth2Config ? JSON.parse(env.oauth2Config) : undefined;
     return {
       name: env.name,
       baseUrl: env.baseUrl,
-      headers: JSON.parse(env.headers || '{}'),
-      cookies: JSON.parse(env.cookies || '{}'),
-      variables: JSON.parse(env.variables || '{}'),
+      headers: includeSecrets ? headers : redactHeaders(headers, [env.apiKeyHeaderName || 'x-api-key']),
+      cookies: includeSecrets ? cookies : Object.fromEntries(Object.keys(cookies).map(key => [key, '********'])),
+      variables: includeSecrets ? variables : redactSensitiveData(variables),
       authType: env.authType,
-      authToken: env.authToken,
+      authToken: includeSecrets && env.authToken ? env.authToken : (env.authToken ? '********' : ''),
       apiKeyHeaderName: env.apiKeyHeaderName,
-      oauth2Config: env.oauth2Config ? JSON.parse(env.oauth2Config) : undefined,
-      timeout: env.timeout
+      oauth2Config: includeSecrets ? oauth2Config : redactSensitiveData(oauth2Config),
+      timeout: env.timeout,
+      secretsRedacted: !includeSecrets,
     };
   }
 
@@ -602,11 +600,11 @@ export class DbManager {
   }
 
   // --- PROJECT EXPORT/IMPORT ---
-  async exportProject(projectId: number): Promise<any> {
+  async exportProject(projectId: number, includeSecrets = false): Promise<any> {
     const proj = await this.get<ProjectRecord>('SELECT * FROM projects WHERE id = ?', [projectId]);
     if (!proj) throw new Error(`Project with ID ${projectId} not found.`);
     const envs = await this.listEnvironments(projectId);
-    const exportedEnvs = await Promise.all(envs.map(e => this.exportEnvironment(e.id)));
+    const exportedEnvs = await Promise.all(envs.map(e => this.exportEnvironment(e.id, includeSecrets)));
     return {
       name: proj.name,
       description: proj.description,
@@ -784,4 +782,3 @@ export class DbManager {
     await this.initialize();
   }
 }
-

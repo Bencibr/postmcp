@@ -1,11 +1,16 @@
 import axios from 'axios';
-import fs from 'fs/promises';
 import yaml from 'js-yaml';
 import { DbManager } from '../db/sqlite.js';
+import {
+  assertSafeOutboundUrl,
+  createSafeRequestOptions,
+  readAllowedTextFile,
+} from './security.js';
 
 export interface SwaggerImportOptions {
   url?: string;
   filePath?: string;
+  confirmFileAccess?: boolean;
 }
 
 export class SwaggerParser {
@@ -23,20 +28,26 @@ export class SwaggerParser {
     let parsedSpec: any = null;
 
     if (options.url) {
-      // 1. Verify Allowlist for URL fetch
-      if (!(await this.dbManager.isUrlAllowed(options.url))) {
-        throw new Error(`Access Denied: The URL "${options.url}" is not allowed under the current security policy/allowlist.`);
-      }
+      const allowlist = await this.dbManager.getAllowlist();
+      await assertSafeOutboundUrl(options.url, allowlist, ['http:', 'https:']);
 
       try {
-        const response = await axios.get(options.url, { responseType: 'text', timeout: 15000 });
+        const response = await axios.get(options.url, {
+          responseType: 'text',
+          timeout: 15000,
+          maxContentLength: 5 * 1024 * 1024,
+          ...createSafeRequestOptions(allowlist, options.url, ['http:', 'https:']),
+        });
         rawContent = response.data;
       } catch (err: any) {
         throw new Error(`Failed to download Swagger spec from "${options.url}": ${err.message}`);
       }
     } else if (options.filePath) {
+      if (options.confirmFileAccess !== true) {
+        throw new Error('File Access Denied: swagger_import with filePath requires confirmFileAccess: true.');
+      }
       try {
-        rawContent = await fs.readFile(options.filePath, 'utf8');
+        rawContent = await readAllowedTextFile(options.filePath);
       } catch (err: any) {
         throw new Error(`Failed to read Swagger file from "${options.filePath}": ${err.message}`);
       }

@@ -1,5 +1,10 @@
 import axios from 'axios';
 import { DbManager, OAuth2Config } from '../db/sqlite.js';
+import {
+  assertOAuthTransport,
+  assertSafeOutboundUrl,
+  createSafeRequestOptions,
+} from '../utils/security.js';
 
 export class OAuth2Authenticator {
   private dbManager: DbManager;
@@ -36,6 +41,15 @@ export class OAuth2Authenticator {
    */
   private async fetchNewToken(config: OAuth2Config): Promise<{ accessToken: string; expiresIn?: number }> {
     const { tokenUrl, clientId, clientSecret, scope, grantType } = config;
+    const allowlist = await this.dbManager.getAllowlist();
+    const parsedTokenUrl = await assertSafeOutboundUrl(tokenUrl, allowlist, ['http:', 'https:']);
+    assertOAuthTransport(parsedTokenUrl);
+    const safeRequestOptions = createSafeRequestOptions(
+      allowlist,
+      tokenUrl,
+      ['http:', 'https:'],
+      true,
+    );
 
     const params = new URLSearchParams();
     params.append('grant_type', grantType || 'client_credentials');
@@ -53,7 +67,13 @@ export class OAuth2Authenticator {
 
     const tryExchange = async (headers: Record<string, string>, body: string): Promise<{ accessToken: string; expiresIn?: number } | null> => {
       try {
-        const response = await axios.post(tokenUrl, body, { headers, timeout: 10000 });
+        const response = await axios.post(tokenUrl, body, {
+          headers,
+          timeout: 10000,
+          maxContentLength: 1024 * 1024,
+          maxBodyLength: 1024 * 1024,
+          ...safeRequestOptions,
+        });
         if (response.data?.access_token) {
           return {
             accessToken: response.data.access_token,
@@ -61,7 +81,8 @@ export class OAuth2Authenticator {
           };
         }
         throw new Error('Response did not contain an access_token');
-      } catch {
+      } catch (error: any) {
+        if (/Access Denied|OAuth token endpoints must use HTTPS/i.test(error?.message || '')) throw error;
         return null;
       }
     };

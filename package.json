@@ -1,14 +1,48 @@
 {
   "name": "postmcp",
-  "version": "1.0.0",
-  "description": "",
+  "version": "1.1.0",
+  "description": "MCP server for AI-driven API testing — HTTP, GraphQL, WebSocket, OAuth2, assertions, chained test suites, and SQLite-persisted history with JSON diff comparison.",
   "main": "dist/index.js",
+  "bin": {
+    "postmcp": "dist/index.js"
+  },
   "type": "module",
+  "files": [
+    "dist/",
+    "README.md",
+    "ai_instructions.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/atomgit/postmcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "api-testing",
+    "http-client",
+    "websocket",
+    "graphql",
+    "oauth2",
+    "assertion",
+    "test-automation",
+    "ai-agent",
+    "claude-desktop",
+    "llm-tools"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npx tsx src/test/runTests.ts",
+    "test:negative": "npx tsx src/test/negativeTests.ts",
+    "test:stress": "npx tsx src/test/stressTest.ts",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

@@ -1,10 +1,16 @@
 import axios, { AxiosRequestConfig, Method } from 'axios';
 import jp from 'jsonpath';
-import fs from 'fs/promises';
+import { createHash } from 'crypto';
 import path from 'path';
 import { DbManager, EnvironmentRecord } from '../db/sqlite.js';
 import { OAuth2Authenticator } from './oauth.js';
 import { logger } from '../utils/logger.js';
+import {
+  createSafeRequestOptions,
+  readAllowedFile,
+  redactBody,
+  redactHeaders,
+} from '../utils/security.js';
 
 export interface HttpRequestOptions {
   url: string;
@@ -17,6 +23,7 @@ export interface HttpRequestOptions {
   jsonpathFilter?: string;
   maxResponseLength?: number;
   fileFields?: Record<string, string>; // Map of field name to local file path for form-data uploads
+  confirmFileAccess?: boolean; // Must be true when fileFields is used
   returnBody?: boolean; // If false, return only status/duration without body (silent mode, saves tokens)
   retryCount?: number; // Auto retry count on 5xx/network errors (default: 0)
   retryDelay?: number; // Delay between retries in ms (default: 1000)
@@ -41,57 +48,6 @@ export interface HttpResponseData {
   cached?: boolean; // Whether response was served from cache
 }
 
-// Helper to redact sensitive keys in headers
-function redactHeaders(headers: Record<string, string>): Record<string, string> {
-  const redacted: Record<string, string> = {};
-  const sensitiveKeys = ['authorization', 'cookie', 'set-cookie', 'x-api-key', 'client-secret'];
-  
-  for (const [key, val] of Object.entries(headers)) {
-    if (sensitiveKeys.includes(key.toLowerCase())) {
-      redacted[key] = '********';
-    } else {
-      redacted[key] = val;
-    }
-  }
-  return redacted;
-}
-
-// Helper to redact body secrets (if it is a JSON object or urlencoded string containing keys)
-function redactBody(body: any): string {
-  if (!body) return '';
-  if (typeof body === 'string') {
-    // Check urlencoded body
-    const sensitiveRegex = /(password|client_secret|token|secret)=([^&]+)/gi;
-    if (sensitiveRegex.test(body)) {
-      return body.replace(sensitiveRegex, '$1=********');
-    }
-    return body;
-  }
-  if (typeof body === 'object') {
-    try {
-      const cloned = JSON.parse(JSON.stringify(body));
-      const sensitiveKeys = ['password', 'client_secret', 'token', 'secret'];
-      
-      const mask = (obj: any) => {
-        if (!obj || typeof obj !== 'object') return;
-        for (const key of Object.keys(obj)) {
-          if (sensitiveKeys.includes(key.toLowerCase())) {
-            obj[key] = '********';
-          } else if (typeof obj[key] === 'object') {
-            mask(obj[key]);
-          }
-        }
-      };
-      
-      mask(cloned);
-      return JSON.stringify(cloned, null, 2);
-    } catch {
-      return String(body);
-    }
-  }
-  return String(body);
-}
-
 export class HttpClient {
   private dbManager: DbManager;
   private oauthAuthenticator: OAuth2Authenticator;
@@ -106,14 +62,27 @@ export class HttpClient {
   /**
    * Generates a deterministic cache key from request options (excludes timestamp-sensitive fields).
    */
-  private getCacheKey(options: HttpRequestOptions): string {
+  private getCacheKey(
+    options: HttpRequestOptions,
+    fullUrl: string,
+    projectId: number,
+    environmentId: number,
+    requestHeaders: Record<string, string>,
+  ): string {
     // Only cache GET/HEAD requests, skip when body/auth-sensitive
     const method = (options.method || 'GET').toUpperCase();
     if (!['GET', 'HEAD'].includes(method)) return '';
     // Build key from URL + headers + params (sorted for consistency)
-    const headerStr = options.headers ? JSON.stringify(options.headers, Object.keys(options.headers).sort()) : '';
+    const headerStr = JSON.stringify(requestHeaders, Object.keys(requestHeaders).sort());
     const paramsStr = options.params ? JSON.stringify(options.params, Object.keys(options.params).sort()) : '';
-    return `${method}:${options.url}|${headerStr}|${paramsStr}|${options.body || ''}`;
+    const identityHash = createHash('sha256').update(headerStr).digest('hex');
+    const responseView = JSON.stringify({
+      jsonpathFilter: options.jsonpathFilter,
+      maxResponseLength: options.maxResponseLength,
+      returnBody: options.returnBody,
+      assertBefore: options.assertBefore,
+    });
+    return `${projectId}:${environmentId}:${method}:${fullUrl}|${identityHash}|${paramsStr}|${options.body || ''}|${responseView}`;
   }
 
   /**
@@ -189,10 +158,10 @@ export class HttpClient {
       fullUrl = `${cleanBase}${cleanPath}`;
     }
 
-    // 3. Verify Allowlist
-    if (!(await this.dbManager.isUrlAllowed(fullUrl))) {
-      throw new Error(`Access Denied: The URL "${fullUrl}" is not allowed under the current security policy/allowlist.`);
-    }
+    // 3. Verify the initial destination. Redirects and DNS resolutions are
+    // validated again by the request transport below.
+    await this.dbManager.assertUrlAllowed(fullUrl, ['http:', 'https:']);
+    const allowlist = await this.dbManager.getAllowlist();
 
     // 4. Resolve Headers & Cookies from DB environment
     const requestHeaders: Record<string, string> = {};
@@ -234,6 +203,7 @@ export class HttpClient {
           }
         } catch (err: any) {
           logger.error('HTTP', `Failed to inject OAuth2 token from database: ${err.message}`);
+          throw new Error(`OAuth2 authentication failed; request was not sent: ${err.message}`);
         }
       }
     }
@@ -266,14 +236,13 @@ export class HttpClient {
         }
         // File uploads: add files from fileFields
         if (options.fileFields) {
+          if (options.confirmFileAccess !== true) {
+            throw new Error('File Access Denied: fileFields requires confirmFileAccess: true.');
+          }
           for (const [fieldName, filePath] of Object.entries(options.fileFields)) {
-            try {
-              const fileBuffer = await fs.readFile(filePath);
-              const blob = new Blob([fileBuffer]);
-              formData.append(fieldName, blob, path.basename(filePath));
-            } catch (err: any) {
-              logger.error('HTTP', `File upload failed: "${filePath}" for field "${fieldName}": ${err.message}`);
-            }
+            const fileBuffer = await readAllowedFile(filePath);
+            const blob = new Blob([Uint8Array.from(fileBuffer)]);
+            formData.append(fieldName, blob, path.basename(filePath));
           }
         }
         requestData = formData;
@@ -289,26 +258,48 @@ export class HttpClient {
     }
 
     // 7. Check Response Cache (GET/HEAD only)
-    const cacheKey = this.getCacheKey(options);
-    const cacheTtl = options.cacheTtl || 0;
+    const cacheKey = this.getCacheKey(options, fullUrl, activeInfo.projectId, env.id, requestHeaders);
+    const cacheTtl = Math.min(Math.max(0, options.cacheTtl || 0), 60 * 60 * 1000);
     if (cacheKey && cacheTtl > 0) {
       const cached = this.responseCache.get(cacheKey);
       if (cached && cached.expiry > Date.now()) {
+        await this.dbManager.logRequest({
+          environmentId: env.id,
+          projectName: activeInfo.projectName,
+          environmentName: activeInfo.envName,
+          url: fullUrl,
+          method: options.method || 'GET',
+          requestHeaders: JSON.stringify(redactHeaders(requestHeaders, [env.apiKeyHeaderName || 'x-api-key'])),
+          requestBody: redactBody(options.body),
+          responseStatus: cached.data.status,
+          responseHeaders: JSON.stringify(redactHeaders(cached.data.headers)),
+          responseBody: redactBody(cached.data.fullBody ?? cached.data.body).substring(0, 100000),
+          durationMs: 0,
+          success: cached.data.status < 400 ? 1 : 0,
+        });
         return { ...cached.data, cached: true };
       }
     }
 
     // 8. Execute Request (with auto-retry support)
-    const maxRetries = options.retryCount ?? 0;
-    const retryDelay = options.retryDelay ?? 1000;
+    const maxRetries = Math.min(Math.max(0, Math.trunc(options.retryCount ?? 0)), 5);
+    const retryDelay = Math.min(Math.max(0, options.retryDelay ?? 1000), 30000);
     let lastError: Error | null = null;
     let response: any;
     let durationMs = 0;
     let success = 1;
+    const hasSensitiveHeaders = env.authType !== 'none'
+      || Object.keys(requestHeaders).some(key => /authorization|cookie|api[-_]?key|secret/i.test(key));
+    const safeRequestOptions = createSafeRequestOptions(
+      allowlist,
+      fullUrl,
+      ['http:', 'https:'],
+      hasSensitiveHeaders,
+    );
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0) {
-        await new Promise(r => setTimeout(r, retryDelay * attempt)); // Exponential backoff
+        await new Promise(r => setTimeout(r, Math.min(retryDelay * (2 ** (attempt - 1)), 30000)));
       }
 
       const startTime = Date.now();
@@ -318,8 +309,11 @@ export class HttpClient {
         headers: requestHeaders,
         params: options.params,
         data: requestData,
-        timeout: options.timeout ?? env.timeout ?? 30000,
-        validateStatus: () => true
+        timeout: Math.min(Math.max(1, options.timeout ?? env.timeout ?? 30000), 120000),
+        maxContentLength: 10 * 1024 * 1024,
+        maxBodyLength: 10 * 1024 * 1024,
+        validateStatus: () => true,
+        ...safeRequestOptions,
       };
 
       try {
@@ -327,13 +321,15 @@ export class HttpClient {
         durationMs = Date.now() - startTime;
         lastError = null;
         logger.httpRequest(options.method || 'GET', fullUrl, response.status, durationMs);
-        break; // Success, exit retry loop
+        if (response.status >= 500 && attempt < maxRetries) continue;
+        break;
       } catch (err: any) {
         durationMs = Date.now() - startTime;
         lastError = err;
         
-        // Only retry on network errors or 5xx
-        if (attempt < maxRetries && (!err.response || (err.response?.status >= 500))) {
+        // Retry only transport failures. HTTP 5xx responses are handled above
+        // because validateStatus intentionally preserves them for assertions.
+        if (attempt < maxRetries && !err.response) {
           continue;
         }
         
@@ -345,7 +341,7 @@ export class HttpClient {
           environmentName: activeInfo.envName,
           url: fullUrl,
           method: options.method,
-          requestHeaders: JSON.stringify(redactHeaders(requestHeaders)),
+          requestHeaders: JSON.stringify(redactHeaders(requestHeaders, [env.apiKeyHeaderName || 'x-api-key'])),
           requestBody: redactBody(options.body),
           responseStatus: err.response?.status || 0,
           responseHeaders: JSON.stringify({}),
@@ -358,27 +354,18 @@ export class HttpClient {
       }
     }
 
+    if (!response) throw lastError || new Error('HTTP request failed without a response.');
+    success = response.status < 400 ? 1 : 0;
+
     let responseBody = response.data;
     let isTruncated = false;
     let originalSize = 0;
 
-    // 9. Conditional Request (assertBefore) — if condition fails, return short response
-    if (options.assertBefore) {
-      const conditionMet = this.evaluateAssertBefore(response, options.assertBefore);
-      if (!conditionMet) {
-        const shortResult: HttpResponseData = {
-          status: response.status,
-          statusText: response.statusText,
-          headers: {},
-          body: `[Conditional Request] assertBefore condition NOT met: ${options.assertBefore.type} ${options.assertBefore.operator} ${JSON.stringify(options.assertBefore.expected)}. Skipped response body.`,
-          fullBody: undefined,
-          durationMs,
-          isTruncated: false,
-          originalSize: 0
-        };
-        return shortResult;
-      }
-    }
+    // 9. Conditional Request (assertBefore). The network event is still
+    // logged and cookie state is still updated even when output is suppressed.
+    const conditionMet = options.assertBefore
+      ? this.evaluateAssertBefore(response, options.assertBefore)
+      : true;
 
     // Apply JSONPath filters
     if (options.jsonpathFilter && responseBody) {
@@ -403,7 +390,7 @@ export class HttpClient {
       : String(responseBody);
     
     originalSize = stringifiedBody.length;
-    const limit = options.maxResponseLength || 15000;
+    const limit = Math.min(Math.max(0, options.maxResponseLength ?? 15000), 1_000_000);
 
     if (originalSize > limit) {
       isTruncated = true;
@@ -418,43 +405,27 @@ export class HttpClient {
       }
     }
 
-    // 10. Silent Mode — only return status/duration, no body
-    if (options.returnBody === false) {
-      const silentResult: HttpResponseData = {
-        status: response.status,
-        statusText: response.statusText,
-        headers: responseHeaders,
-        body: `[Silent Mode] ${response.status} ${response.statusText} (${durationMs}ms)`,
-        fullBody: undefined,
-        durationMs,
-        isTruncated: false,
-        originalSize: 0
-      };
-      return silentResult;
-    }
-
     // 11. Log Request and Response to DB
     await this.dbManager.logRequest({
       environmentId: env.id,
       projectName: activeInfo.projectName,
       environmentName: activeInfo.envName,
       url: fullUrl,
-      method: options.method,
-      requestHeaders: JSON.stringify(redactHeaders(requestHeaders)),
+      method: options.method || 'GET',
+      requestHeaders: JSON.stringify(redactHeaders(requestHeaders, [env.apiKeyHeaderName || 'x-api-key'])),
       requestBody: redactBody(options.body),
       responseStatus: response.status,
-      responseHeaders: JSON.stringify(responseHeaders),
-      responseBody: stringifiedBody.substring(0, 100000),
+      responseHeaders: JSON.stringify(redactHeaders(responseHeaders)),
+      responseBody: redactBody(response.data).substring(0, 100000),
       durationMs,
       success
     });
 
     // 12. Cookie Jar: Auto-track Set-Cookie headers and persist to environment
-    if (responseHeaders['set-cookie']) {
-      const setCookieStr = responseHeaders['set-cookie'];
+    const rawSetCookie = response.headers['set-cookie'];
+    if (rawSetCookie) {
       const existingCookies = JSON.parse(env.cookies || '{}');
-      // Parse "key=value" from each Set-Cookie header
-      const cookieParts = Array.isArray(setCookieStr) ? setCookieStr : [setCookieStr];
+      const cookieParts = Array.isArray(rawSetCookie) ? rawSetCookie : [String(rawSetCookie)];
       for (const part of cookieParts) {
         const match = part.match(/^([^=]+)=([^;]+)/);
         if (match) {
@@ -481,6 +452,20 @@ export class HttpClient {
       originalSize,
       cached: false
     };
+
+    if (!conditionMet && options.assertBefore) {
+      result.headers = {};
+      result.body = `[Conditional Request] assertBefore condition NOT met: ${options.assertBefore.type} ${options.assertBefore.operator} ${JSON.stringify(options.assertBefore.expected)}. Skipped response body.`;
+      result.fullBody = undefined;
+      result.isTruncated = false;
+      result.originalSize = 0;
+    } else if (options.returnBody === false) {
+      result.headers = {};
+      result.body = `[Silent Mode] ${response.status} ${response.statusText} (${durationMs}ms)`;
+      result.fullBody = undefined;
+      result.isTruncated = false;
+      result.originalSize = 0;
+    }
 
     // Cache the response (GET/HEAD only, max 50 entries, LRU eviction)
     if (cacheKey && cacheTtl > 0) {

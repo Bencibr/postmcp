@@ -20,6 +20,12 @@ import { TestReporter, TestSuiteResult, TestStepResult } from './utils/reporter.
 import { DiffEngine } from './utils/diff.js';
 import { SwaggerParser } from './utils/swagger.js';
 import { logger } from './utils/logger.js';
+import {
+  isSensitiveKey,
+  readAllowedTextFile,
+  redactHeaders,
+  redactSensitiveData,
+} from './utils/security.js';
 import jp from 'jsonpath';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -53,13 +59,15 @@ function redactEnvironment(env: any) {
   }
   if (cloned.oauth2Config) {
     try {
-      const parsed = JSON.parse(cloned.oauth2Config);
-      if (parsed.clientSecret) {
-        parsed.clientSecret = '********';
-        cloned.oauth2Config = JSON.stringify(parsed);
-      }
+      cloned.oauth2Config = JSON.stringify(redactSensitiveData(JSON.parse(cloned.oauth2Config)));
     } catch {}
   }
+  try { cloned.headers = JSON.stringify(redactHeaders(JSON.parse(cloned.headers || '{}'), [cloned.apiKeyHeaderName || 'x-api-key'])); } catch {}
+  try {
+    const cookies = JSON.parse(cloned.cookies || '{}');
+    cloned.cookies = JSON.stringify(Object.fromEntries(Object.keys(cookies).map(key => [key, '********'])));
+  } catch {}
+  try { cloned.variables = JSON.stringify(redactSensitiveData(JSON.parse(cloned.variables || '{}'))); } catch {}
   return cloned;
 }
 
@@ -108,12 +116,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'project_delete',
         description: 'Delete a project workspace (cascades and deletes its environments, credentials, and test history).',
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
         inputSchema: {
           type: 'object',
           properties: {
-            projectId: { type: 'number', description: 'Database ID of the project to delete' }
+            projectId: { type: 'number', description: 'Database ID of the project to delete' },
+            expectedProjectName: { type: 'string', description: 'Must exactly match the current project name' },
+            confirm: { type: 'boolean', description: 'Must be true to confirm cascading deletion' }
           },
-          required: ['projectId']
+          required: ['projectId', 'expectedProjectName', 'confirm']
         }
       },
       {
@@ -183,12 +194,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'env_delete',
         description: 'Delete an environment profile.',
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
         inputSchema: {
           type: 'object',
           properties: {
-            environmentId: { type: 'number', description: 'Database ID of the environment to delete' }
+            environmentId: { type: 'number', description: 'Database ID of the environment to delete' },
+            expectedEnvironmentName: { type: 'string', description: 'Must exactly match the environment name' },
+            confirm: { type: 'boolean', description: 'Must be true to confirm deletion' }
           },
-          required: ['environmentId']
+          required: ['environmentId', 'expectedEnvironmentName', 'confirm']
         }
       },
       {
@@ -209,7 +223,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: 'object',
           properties: {
-            key: { type: 'string', description: 'Variable name' }
+            key: { type: 'string', description: 'Variable name' },
+            includeSecret: { type: 'boolean', description: 'Return a sensitive value instead of masking it' },
+            confirmSecret: { type: 'boolean', description: 'Must be true when includeSecret is true' }
           },
           required: ['key']
         }
@@ -228,7 +244,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'env_list_variables',
         description: 'List all variables defined in the active environment.',
-        inputSchema: { type: 'object' }
+        inputSchema: {
+          type: 'object',
+          properties: {
+            includeSecrets: { type: 'boolean', description: 'Return sensitive variable values instead of masking them' },
+            confirmSecrets: { type: 'boolean', description: 'Must be true when includeSecrets is true' }
+          }
+        }
       },
       {
         name: 'env_rename',
@@ -244,7 +266,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'env_set_allowlist',
-        description: 'Configure target domains allowed for outgoing HTTP/WebSocket requests (e.g. ["localhost", "*.company.com"]). Set to empty array to allow all.',
+        description: 'Configure explicit target domains allowed for outgoing requests. Empty denies all. Use private:host only for trusted internal hosts.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -267,6 +289,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'http_request',
         description: 'Send a RESTful HTTP request. Automatically injects credentials and cookies from the active environment. Evaluates assertions and logs request/response details to history database.',
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
         inputSchema: {
           type: 'object',
           properties: {
@@ -279,6 +302,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             timeout: { type: 'number', description: 'Request timeout in ms (overrides environment default)' },
             jsonpathFilter: { type: 'string', description: 'Extract specific parts of response payload' },
             fileFields: { type: 'object', additionalProperties: { type: 'string' }, description: 'File uploads: {"fieldName": "/path/to/file"} for form-data body type' },
+            confirmFileAccess: { type: 'boolean', description: 'Must be true when fileFields reads local files' },
             maxResponseLength: { type: 'number', description: 'Max response body length in chars (default: 15000). Set higher for full responses, lower to save tokens.' },
             returnBody: { type: 'boolean', description: 'Set false to skip response body (silent mode). Returns only status + duration. Saves tokens.' },
             retryCount: { type: 'number', description: 'Auto-retry count on network errors or 5xx (default: 0)' },
@@ -317,6 +341,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'ws_connect',
         description: 'Open a persistent WebSocket connection, backed by headers and cookies from active environment. Returns connectionId.',
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
         inputSchema: {
           type: 'object',
           properties: {
@@ -417,11 +442,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'history_clear',
         description: 'Delete logs from history table.',
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
         inputSchema: {
           type: 'object',
           properties: {
-            olderThanSeconds: { type: 'number', description: 'Optionally clear logs older than boundary seconds' }
-          }
+            olderThanSeconds: { type: 'number', description: 'Optionally clear logs older than boundary seconds' },
+            confirm: { type: 'boolean', description: 'Must be true to confirm history deletion' }
+          },
+          required: ['confirm']
         }
       },
 
@@ -442,6 +470,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               },
               required: ['type', 'filePath']
             },
+            confirmFileAccess: { type: 'boolean', description: 'Must be true when dataSource reads a local file' },
             steps: {
               type: 'array',
               items: {
@@ -492,6 +521,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'db_reset',
         description: 'DANGER: Factory reset the SQLite database. Closes database, deletes the database file, and recreates a fresh blank schema with a DefaultProject.',
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
         inputSchema: {
           type: 'object',
           properties: {
@@ -504,11 +534,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'swagger_import',
         description: 'Import API routes and schemas from a local Swagger/OpenAPI file or remote URL, outputting a structured Markdown API Reference.',
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
         inputSchema: {
           type: 'object',
           properties: {
             url: { type: 'string', description: 'Public URL to download swagger.json or openapi.json/yaml' },
-            filePath: { type: 'string', description: 'Absolute path to local JSON/YAML Swagger specification' }
+            filePath: { type: 'string', description: 'Absolute path to local JSON/YAML Swagger specification' },
+            confirmFileAccess: { type: 'boolean', description: 'Must be true when filePath is used' }
           }
         }
       },
@@ -516,6 +548,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'graphql_request',
         description: 'Send a GraphQL query/mutation to a GraphQL endpoint. Automatically injects credentials and variables.',
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
         inputSchema: {
           type: 'object',
           properties: {
@@ -562,12 +595,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'suite_delete',
         description: 'Delete a saved test suite.',
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
         inputSchema: {
           type: 'object',
           properties: {
-            suiteId: { type: 'number', description: 'Database ID of the suite to delete' }
+            suiteId: { type: 'number', description: 'Database ID of the suite to delete' },
+            expectedSuiteName: { type: 'string', description: 'Must exactly match the saved suite name' },
+            confirm: { type: 'boolean', description: 'Must be true to confirm deletion' }
           },
-          required: ['suiteId']
+          required: ['suiteId', 'expectedSuiteName', 'confirm']
         }
       },
       // --- HISTORY EXPORT ---
@@ -588,7 +624,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: 'object',
           properties: {
-            environmentId: { type: 'number', description: 'ID of the environment to export' }
+            environmentId: { type: 'number', description: 'ID of the environment to export' },
+            includeSecrets: { type: 'boolean', description: 'Include credentials and cookies instead of masking them' },
+            confirmSecrets: { type: 'boolean', description: 'Must be true when includeSecrets is true' }
           },
           required: ['environmentId']
         }
@@ -612,7 +650,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: 'object',
           properties: {
-            projectId: { type: 'number', description: 'ID of the project to export' }
+            projectId: { type: 'number', description: 'ID of the project to export' },
+            includeSecrets: { type: 'boolean', description: 'Include credentials and cookies instead of masking them' },
+            confirmSecrets: { type: 'boolean', description: 'Must be true when includeSecrets is true' }
           },
           required: ['projectId']
         }
@@ -635,9 +675,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: 'object',
           properties: {
-            filePath: { type: 'string', description: 'Absolute path to the Postman Collection JSON file' }
+            filePath: { type: 'string', description: 'Absolute path to the Postman Collection JSON file' },
+            confirmFileAccess: { type: 'boolean', description: 'Must be true to read the local file' }
           },
-          required: ['filePath']
+          required: ['filePath', 'confirmFileAccess']
         }
       }
     ]
@@ -799,7 +840,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'project_delete': {
-        const { projectId } = args as any;
+        const { projectId, expectedProjectName, confirm } = args as any;
+        const project = await dbManager.get<ProjectRecord>('SELECT * FROM projects WHERE id = ?', [projectId]);
+        if (!project) throw new Error(`Project with ID ${projectId} not found.`);
+        if (confirm !== true || expectedProjectName !== project.name) {
+          throw new Error('Project deletion denied: confirm must be true and expectedProjectName must exactly match the stored project name.');
+        }
         await dbManager.deleteProject(projectId);
         return {
           content: [{ type: 'text', text: `Project ID ${projectId} deleted.` }]
@@ -862,7 +908,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'env_delete': {
-        const { environmentId } = args as any;
+        const { environmentId, expectedEnvironmentName, confirm } = args as any;
+        const environment = await dbManager.getEnvironmentById(environmentId);
+        if (!environment) throw new Error(`Environment with ID ${environmentId} not found.`);
+        if (confirm !== true || expectedEnvironmentName !== environment.name) {
+          throw new Error('Environment deletion denied: confirm must be true and expectedEnvironmentName must exactly match the stored environment name.');
+        }
         await dbManager.deleteEnvironment(environmentId);
         return {
           content: [{ type: 'text', text: `Environment ID ${environmentId} deleted.` }]
@@ -873,19 +924,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { key, value } = args as any;
         const state = await dbManager.getActiveProjectAndEnv();
         await dbManager.setEnvironmentVariable(state.envId, key, value);
+        const displayValue = isSensitiveKey(key) ? '********' : value;
         return {
-          content: [{ type: 'text', text: `Set variable "${key}" = "${value}" in environment "${state.envName}" (Project: ${state.projectName}).` }]
+          content: [{ type: 'text', text: `Set variable "${key}" = "${displayValue}" in environment "${state.envName}" (Project: ${state.projectName}).` }]
         };
       }
 
       case 'env_get_variable': {
-        const { key } = args as any;
+        const { key, includeSecret, confirmSecret } = args as any;
         const state = await dbManager.getActiveProjectAndEnv();
         const value = await dbManager.getEnvironmentVariable(state.envId, key);
         if (value === undefined) {
           return { content: [{ type: 'text', text: `Variable "${key}" not found in environment "${state.envName}".` }] };
         }
-        return { content: [{ type: 'text', text: `Variable "${key}" = ${JSON.stringify(value)}` }] };
+        if (includeSecret === true && confirmSecret !== true) {
+          throw new Error('Secret access denied: confirmSecret must be true when includeSecret is requested.');
+        }
+        const displayValue = includeSecret === true ? value : redactSensitiveData({ [key]: value })[key];
+        return { content: [{ type: 'text', text: `Variable "${key}" = ${JSON.stringify(displayValue)}` }] };
       }
 
       case 'env_delete_variable': {
@@ -899,12 +955,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'env_list_variables': {
+        const { includeSecrets, confirmSecrets } = args as any;
+        if (includeSecrets === true && confirmSecrets !== true) {
+          throw new Error('Secret access denied: confirmSecrets must be true when includeSecrets is requested.');
+        }
         const state = await dbManager.getActiveProjectAndEnv();
         const vars = await dbManager.listEnvironmentVariables(state.envId);
         if (Object.keys(vars).length === 0) {
           return { content: [{ type: 'text', text: `No variables defined in environment "${state.envName}".` }] };
         }
-        return { content: [{ type: 'text', text: JSON.stringify(vars, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(includeSecrets === true ? vars : redactSensitiveData(vars), null, 2) }] };
       }
 
       case 'env_rename': {
@@ -916,8 +976,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'env_set_allowlist': {
         const { domains } = args as any;
         await dbManager.setAllowlist(domains);
+        const configured = await dbManager.getAllowlist();
         return {
-          content: [{ type: 'text', text: `URL Allowlist configured: ${JSON.stringify(domains)}` }]
+          content: [{ type: 'text', text: `URL Allowlist configured: ${JSON.stringify(configured)}${configured.length === 0 ? ' (all outbound requests are denied)' : ''}` }]
         };
       }
 
@@ -930,7 +991,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // --- HTTP REQUEST ---
       case 'http_request': {
-        const { url, method, headers, params, body, bodyType, timeout, jsonpathFilter, fileFields, maxResponseLength, returnBody, retryCount, retryDelay, cacheTtl, assertBefore, assertions } = args as any;
+        const { url, method, headers, params, body, bodyType, timeout, jsonpathFilter, fileFields, confirmFileAccess, maxResponseLength, returnBody, retryCount, retryDelay, cacheTtl, assertBefore, assertions } = args as any;
         
         const state = await dbManager.getActiveProjectAndEnv();
         const env = await dbManager.getEnvironmentById(state.envId);
@@ -952,6 +1013,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           timeout,
           jsonpathFilter,
           fileFields,
+          confirmFileAccess,
           maxResponseLength,
           returnBody,
           retryCount,
@@ -1146,7 +1208,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'history_clear': {
-        const { olderThanSeconds } = args as any;
+        const { olderThanSeconds, confirm } = args as any;
+        if (confirm !== true) throw new Error('History deletion denied: confirm must be true.');
         const changes = await dbManager.clearHistory(olderThanSeconds);
         return {
           content: [{ type: 'text', text: `Deleted ${changes} records from history database.` }]
@@ -1155,7 +1218,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // --- SEQUENTIAL TESTING SUITE RUNNER ---
       case 'test_run_suite': {
-        const { suiteName, steps, dataSource } = args as any;
+        const { suiteName, steps, dataSource, confirmFileAccess } = args as any;
         const startTime = Date.now();
         
         const state = await dbManager.getActiveProjectAndEnv();
@@ -1166,7 +1229,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Data-Driven Testing: load rows from CSV/JSON file and run suite for each row
         if (dataSource) {
-          const rawContent = await fs.readFile(dataSource.filePath, 'utf8');
+          if (confirmFileAccess !== true) {
+            throw new Error('File Access Denied: dataSource requires confirmFileAccess: true.');
+          }
+          const rawContent = await readAllowedTextFile(dataSource.filePath);
           let rows: Record<string, any>[] = [];
           if (dataSource.type === 'csv') {
             const lines = rawContent.trim().split('\n');
@@ -1256,8 +1322,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'swagger_import': {
-        const { url, filePath } = args as any;
-        const mdDoc = await swaggerParser.importSpec({ url, filePath });
+        const { url, filePath, confirmFileAccess } = args as any;
+        const mdDoc = await swaggerParser.importSpec({ url, filePath, confirmFileAccess });
         return {
           content: [{ type: 'text', text: mdDoc }]
         };
@@ -1296,6 +1362,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const startTime = Date.now();
         const state = await dbManager.getActiveProjectAndEnv();
+        if (suite.projectId !== state.projectId) {
+          throw new Error(`Suite access denied: suite ID ${suiteId} does not belong to the active project.`);
+        }
         const env = await dbManager.getEnvironmentById(state.envId);
         if (!env) throw new Error('Active environment configs not loaded.');
         const variables = JSON.parse(env.variables || '{}');
@@ -1317,7 +1386,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'suite_delete': {
-        const { suiteId } = args as any;
+        const { suiteId, expectedSuiteName, confirm } = args as any;
+        const suite = await dbManager.loadTestSuite(suiteId);
+        if (!suite) throw new Error(`Suite ID ${suiteId} not found.`);
+        const activeProjectId = await dbManager.getActiveProjectId();
+        if (suite.projectId !== activeProjectId) {
+          throw new Error(`Suite deletion denied: suite ID ${suiteId} does not belong to the active project.`);
+        }
+        if (confirm !== true || expectedSuiteName !== suite.name) {
+          throw new Error('Suite deletion denied: confirm must be true and expectedSuiteName must exactly match the stored suite name.');
+        }
         await dbManager.deleteTestSuite(suiteId);
         return { content: [{ type: 'text', text: `Test suite ID ${suiteId} deleted.` }] };
       }
@@ -1329,8 +1407,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'env_export': {
-        const { environmentId } = args as any;
-        const envData = await dbManager.exportEnvironment(environmentId);
+        const { environmentId, includeSecrets, confirmSecrets } = args as any;
+        if (includeSecrets === true && confirmSecrets !== true) {
+          throw new Error('Secret export denied: confirmSecrets must be true when includeSecrets is requested.');
+        }
+        const envData = await dbManager.exportEnvironment(environmentId, includeSecrets === true);
         return { content: [{ type: 'text', text: JSON.stringify(envData, null, 2) }] };
       }
 
@@ -1342,8 +1423,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'project_export': {
-        const { projectId } = args as any;
-        const projData = await dbManager.exportProject(projectId);
+        const { projectId, includeSecrets, confirmSecrets } = args as any;
+        if (includeSecrets === true && confirmSecrets !== true) {
+          throw new Error('Secret export denied: confirmSecrets must be true when includeSecrets is requested.');
+        }
+        const projData = await dbManager.exportProject(projectId, includeSecrets === true);
         return { content: [{ type: 'text', text: JSON.stringify(projData, null, 2) }] };
       }
 
@@ -1354,8 +1438,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'postman_import': {
-        const { filePath: pmPath } = args as any;
-        const pmContent = await fs.readFile(pmPath, 'utf8');
+        const { filePath: pmPath, confirmFileAccess } = args as any;
+        if (confirmFileAccess !== true) {
+          throw new Error('File Access Denied: postman_import requires confirmFileAccess: true.');
+        }
+        const pmContent = await readAllowedTextFile(pmPath);
         const pmJson = JSON.parse(pmContent);
         if (pmJson.info?.schema && !pmJson.info.schema.includes('collection')) {
           throw new Error('Unsupported Postman format. Only Collection v2 is supported.');
