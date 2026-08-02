@@ -29,6 +29,21 @@ A high-performance Model Context Protocol (MCP) server written in Node.js (TypeS
 
 ### 🛠️ Setup & Build
 
+For the published package, install the MCP server globally:
+
+```bash
+npm install -g @bencibro/postmcp
+postmcp
+```
+
+Or run it without a global install:
+
+```bash
+npx -y @bencibro/postmcp
+```
+
+To develop from this repository instead:
+
 1. Install dependencies:
    ```bash
    npm install
@@ -46,6 +61,20 @@ Before sending any outbound request, configure an explicit allowlist with `env_s
 
 Local file tools (`fileFields`, `test_run_suite.dataSource`, `swagger_import.filePath`, and `postman_import`) require `confirmFileAccess: true`. Files must be inside `POSTMCP_FILE_ROOTS` (defaults to the project directory), cannot be protected credential files, and are limited to 10 MiB by default. Set `POSTMCP_MAX_FILE_BYTES` to adjust the limit up to 100 MiB.
 
+### 🚀 First MCP Workflow
+
+After connecting an MCP client, run these tools in order:
+
+```text
+project_create       { "name": "My API" }
+env_configure        { "name": "dev", "baseUrl": "https://api.example.com" }
+env_set_allowlist    { "domains": ["api.example.com"] }
+http_request         { "url": "/health", "method": "GET", "returnBody": false }
+history_list         { "limit": 5 }
+```
+
+The allowlist step is required. An empty allowlist denies all outbound requests.
+
 ### ⚙️ Integrate with Claude Desktop
 
 Add this configuration to your Claude Desktop config (usually at `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
@@ -54,10 +83,8 @@ Add this configuration to your Claude Desktop config (usually at `~/Library/Appl
 {
   "mcpServers": {
     "postmcp": {
-      "command": "node",
-      "args": [
-        "/Volumes/Mac/Workspace/postmcp/dist/index.js"
-      ]
+      "command": "npx",
+      "args": ["-y", "@bencibro/postmcp"]
     }
   }
 }
@@ -118,6 +145,21 @@ npm run test:stress
 
 ### 🛠️ 安装与编译
 
+发布版安装：
+
+```bash
+npm install -g @bencibro/postmcp
+postmcp
+```
+
+也可以不全局安装，直接运行：
+
+```bash
+npx -y @bencibro/postmcp
+```
+
+如果需要从源码开发：
+
 1. 安装依赖包：
    ```bash
    npm install
@@ -135,6 +177,20 @@ npm run test:stress
 
 本地文件工具（`fileFields`、`test_run_suite.dataSource`、`swagger_import.filePath`、`postman_import`）必须传入 `confirmFileAccess: true`。文件必须位于 `POSTMCP_FILE_ROOTS`（默认是项目目录）内，受保护的凭据文件会被拒绝，默认大小上限为 10 MiB。可通过 `POSTMCP_MAX_FILE_BYTES` 调整，上限为 100 MiB。
 
+### 🚀 首次使用流程
+
+连接 MCP 客户端后，按以下顺序调用工具：
+
+```text
+project_create       { "name": "My API" }
+env_configure        { "name": "dev", "baseUrl": "https://api.example.com" }
+env_set_allowlist    { "domains": ["api.example.com"] }
+http_request         { "url": "/health", "method": "GET", "returnBody": false }
+history_list         { "limit": 5 }
+```
+
+白名单配置是必需步骤。空白名单会拒绝所有出站请求。
+
 ### ⚙️ 对接 Claude 桌面客户端
 
 在您的 Claude Desktop 配置文件中（通常位于 macOS 的 `~/Library/Application Support/Claude/claude_desktop_config.json`），添加以下配置：
@@ -143,10 +199,8 @@ npm run test:stress
 {
   "mcpServers": {
     "postmcp": {
-      "command": "node",
-      "args": [
-        "/Volumes/Mac/Workspace/postmcp/dist/index.js"
-      ]
+      "command": "npx",
+      "args": ["-y", "@bencibro/postmcp"]
     }
   }
 }

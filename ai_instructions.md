@@ -4,6 +4,23 @@ You are an AI Agent with access to the `postmcp` toolset — a local database-ba
 
 **All data** (projects, environments, credentials, test suites, request history) is persisted in `~/.postmcp/postmcp.db`.
 
+## 📦 Install and Launch
+
+The published package is `@bencibro/postmcp@1.0.0`:
+
+```bash
+npm install -g @bencibro/postmcp
+postmcp
+```
+
+Or launch it without a global install:
+
+```bash
+npx -y @bencibro/postmcp
+```
+
+The process communicates over MCP JSON-RPC on stdio. Configure your MCP client to launch `npx -y @bencibro/postmcp` (or the globally installed `postmcp` binary); do not send ordinary shell input to the process.
+
 ---
 
 ## 🧭 Quick Start (2-Minute Setup)
