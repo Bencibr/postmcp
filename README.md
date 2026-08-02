@@ -29,6 +29,8 @@ A high-performance Model Context Protocol (MCP) server written in Node.js (TypeS
 
 ### 🛠️ Setup & Build
 
+Published package: [`@bencibro/postmcp`](https://www.npmjs.com/package/@bencibro/postmcp).
+
 For the published package, install the MCP server globally:
 
 ```bash
@@ -39,8 +41,11 @@ postmcp
 Or run it without a global install:
 
 ```bash
+npm install @bencibro/postmcp
 npx -y @bencibro/postmcp
 ```
+
+The local install form is useful when the MCP client configuration runs from a project directory. The package exposes the `postmcp` executable through its `bin` entry.
 
 To develop from this repository instead:
 
@@ -145,6 +150,8 @@ npm run test:stress
 
 ### 🛠️ 安装与编译
 
+已发布 npm 包：[ `@bencibro/postmcp`](https://www.npmjs.com/package/@bencibro/postmcp)。
+
 发布版安装：
 
 ```bash
@@ -155,8 +162,11 @@ postmcp
 也可以不全局安装，直接运行：
 
 ```bash
+npm install @bencibro/postmcp
 npx -y @bencibro/postmcp
 ```
+
+在项目目录中本地安装后，也可以在 MCP 客户端配置中使用 `npx -y @bencibro/postmcp` 启动。该包通过 `bin` 字段提供 `postmcp` 命令。
 
 如果需要从源码开发：
 

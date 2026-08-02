@@ -6,7 +6,7 @@ You are an AI Agent with access to the `postmcp` toolset — a local database-ba
 
 ## 📦 Install and Launch
 
-The published package is `@bencibro/postmcp@1.0.0`:
+The published package is [`@bencibro/postmcp`](https://www.npmjs.com/package/@bencibro/postmcp):
 
 ```bash
 npm install -g @bencibro/postmcp
@@ -16,6 +16,7 @@ postmcp
 Or launch it without a global install:
 
 ```bash
+npm install @bencibro/postmcp
 npx -y @bencibro/postmcp
 ```
 
