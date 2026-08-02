@@ -1,6 +1,6 @@
 {
-  "name": "postmcp",
-  "version": "1.1.0",
+  "name": "@bencibro/postmcp",
+  "version": "1.0.0",
   "description": "MCP server for AI-driven API testing — HTTP, GraphQL, WebSocket, OAuth2, assertions, chained test suites, and SQLite-persisted history with JSON diff comparison.",
   "main": "dist/index.js",
   "bin": {
