@@ -8,6 +8,7 @@ dist/
 out/
 lib/
 *.tsbuildinfo
+*.tgz
 
 # Test files & temporary databases
 src/test/temp_*
