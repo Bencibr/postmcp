@@ -273,7 +273,7 @@ export class HttpClient {
           requestBody: redactBody(options.body),
           responseStatus: cached.data.status,
           responseHeaders: JSON.stringify(redactHeaders(cached.data.headers)),
-          responseBody: redactBody(cached.data.fullBody ?? cached.data.body).substring(0, 100000),
+          responseBody: redactBody(cached.data.fullBody ?? cached.data.body, false).substring(0, 100000),
           durationMs: 0,
           success: cached.data.status < 400 ? 1 : 0,
         });
@@ -416,7 +416,7 @@ export class HttpClient {
       requestBody: redactBody(options.body),
       responseStatus: response.status,
       responseHeaders: JSON.stringify(redactHeaders(responseHeaders)),
-      responseBody: redactBody(response.data).substring(0, 100000),
+      responseBody: redactBody(response.data, false).substring(0, 100000),
       durationMs,
       success
     });

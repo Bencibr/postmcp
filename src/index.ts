@@ -23,6 +23,7 @@ import { logger } from './utils/logger.js';
 import {
   isSensitiveKey,
   readAllowedTextFile,
+  redactBody,
   redactHeaders,
   redactSensitiveData,
 } from './utils/security.js';
@@ -1197,8 +1198,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           record2.responseStatus,
           record1.durationMs,
           record2.durationMs,
-          record1.responseBody || '',
-          record2.responseBody || '',
+          // Redact stored (plaintext) response bodies by default — only history_get
+          // intentionally exposes full responses to the user querying their own record.
+          redactBody(record1.responseBody || ''),
+          redactBody(record2.responseBody || ''),
           format || 'table'
         );
 

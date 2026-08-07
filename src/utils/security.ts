@@ -297,12 +297,12 @@ export function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_PATTERN.test(`_${normalized}_`);
 }
 
-export function redactSensitiveData(value: any): any {
-  if (Array.isArray(value)) return value.map(redactSensitiveData);
+export function redactSensitiveData(value: any, maskSecrets = true): any {
+  if (Array.isArray(value)) return value.map(item => redactSensitiveData(item, maskSecrets));
   if (value && typeof value === 'object') {
     const output: Record<string, any> = {};
     for (const [key, item] of Object.entries(value)) {
-      output[key] = isSensitiveKey(key) ? '********' : redactSensitiveData(item);
+      output[key] = isSensitiveKey(key) && maskSecrets ? '********' : redactSensitiveData(item, maskSecrets);
     }
     return output;
   }
@@ -318,14 +318,16 @@ export function redactHeaders(headers: Record<string, any>, extraSensitiveKeys: 
   return output;
 }
 
-export function redactBody(body: any): string {
+export function redactBody(body: any, maskSecrets = true): string {
   if (body === undefined || body === null || body === '') return '';
-  if (typeof body === 'object') return JSON.stringify(redactSensitiveData(body), null, 2);
+  if (typeof body === 'object') return JSON.stringify(maskSecrets ? redactSensitiveData(body) : body, null, 2);
 
   const text = String(body);
   try {
-    return JSON.stringify(redactSensitiveData(JSON.parse(text)), null, 2);
+    const parsed = JSON.parse(text);
+    return JSON.stringify(maskSecrets ? redactSensitiveData(parsed) : parsed, null, 2);
   } catch {
+    if (!maskSecrets) return text;
     return text
       .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ********')
       .replace(/((?:password|passphrase|client[_-]?secret|secret|access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie)\s*[=:]\s*)([^&\s,;]+)/gi, '$1********');

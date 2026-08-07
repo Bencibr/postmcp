@@ -7,6 +7,7 @@ import { WebSocketManager } from '../client/ws.js';
 import { AssertionEngine } from '../utils/assertion.js';
 import { DiffEngine } from '../utils/diff.js';
 import { SwaggerParser } from '../utils/swagger.js';
+import { redactBody, redactSensitiveData } from '../utils/security.js';
 function interpolate(target, variables) {
     if (typeof target === 'string') {
         return target.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
@@ -155,6 +156,39 @@ async function runTests() {
         assert(wsLogs.some(m => m.data === 'echo: hello socket'), 'WebSocket read correctly matches echo message');
         await wsManager.close(wsConn.connectionId);
         assert(wsManager.listConnections().length === 0, 'WebSocket closed cleanly');
+        // 8b. Test WebSocket variable interpolation in absolute/relative URLs and headers
+        console.log('\n--- Test 8b: WebSocket URL/header variable interpolation ---');
+        await dbManager.setEnvironmentVariable(devId, 'token', 'abc');
+        const wsAbsConn = await wsManager.connect(`ws://localhost:${port}/ws?token={{token}}`);
+        assert(wsAbsConn.status === 'open', 'WebSocket connected with absolute URL containing {{token}}');
+        assert(mockServer.lastWsQuery?.get('token') === 'abc', `Absolute WS URL token interpolated: got "${mockServer.lastWsQuery?.get('token')}" expected "abc"`);
+        await wsManager.close(wsAbsConn.connectionId);
+        const wsRelConn = await wsManager.connect(`/ws?token={{token}}`);
+        assert(wsRelConn.status === 'open', 'WebSocket connected with relative path containing {{token}}');
+        assert(mockServer.lastWsQuery?.get('token') === 'abc', `Relative WS URL token interpolated: got "${mockServer.lastWsQuery?.get('token')}" expected "abc"`);
+        await wsManager.close(wsRelConn.connectionId);
+        const wsHeaderConn = await wsManager.connect(`ws://localhost:${port}/ws`, { 'X-Api-Key': '{{token}}' });
+        assert(wsHeaderConn.status === 'open', 'WebSocket connected with header containing {{token}}');
+        assert(mockServer.lastWsHeaders?.['x-api-key'] === 'abc', `WS header token interpolated: got "${mockServer.lastWsHeaders?.['x-api-key']}" expected "abc"`);
+        await wsManager.close(wsHeaderConn.connectionId);
+        // 8c. Test history_get exposes plaintext response token while list/summary stays masked
+        console.log('\n--- Test 8c: history_get shows plaintext response token (summary stays masked) ---');
+        const loginDetail = await httpClient.send({
+            url: '/api/login',
+            method: 'POST',
+            body: { username: 'admin', password: 'secret' },
+            bodyType: 'json'
+        });
+        assert(loginDetail.status === 200, 'Fresh login to inspect history detail');
+        const recentRows = await dbManager.listHistory({ environmentId: devId, method: 'POST', limit: 1 });
+        const detailRow = recentRows[0];
+        assert(Boolean(detailRow.responseBody?.includes('mock-jwt-token-xyz')), 'history_get response body contains plaintext token (reusable for later requests)');
+        assert(!detailRow.responseBody?.includes('"token": "********"'), 'history_get response body token is not masked');
+        assert(Boolean(detailRow.requestBody?.includes('"password": "********"')), 'history_get request body password stays masked');
+        // Default redaction (used by list/summary/other paths) must keep masking secrets
+        assert(redactSensitiveData({ token: 'mock-jwt-token-xyz', password: 'pw' }).token === '********', 'Default redactSensitiveData still masks token keys');
+        assert(redactBody({ token: 'mock-jwt-token-xyz' }).includes('"token": "********"'), 'Default redactBody still masks secrets');
+        assert(redactBody({ token: 'mock-jwt-token-xyz' }, false).includes('mock-jwt-token-xyz'), 'redactBody with maskSecrets=false preserves tokens');
         // 9. Test Database Maintenance
         console.log('\n--- Test 9: Database Stats & Reset ---');
         const stats = await dbManager.getDatabaseStats();

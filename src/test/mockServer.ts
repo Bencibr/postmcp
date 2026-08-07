@@ -5,6 +5,8 @@ export class MockServer {
   private server: http.Server;
   private wss: WebSocketServer;
   private port: number;
+  public lastWsQuery: URLSearchParams | null = null;
+  public lastWsHeaders: http.IncomingHttpHeaders | null = null;
 
   constructor(port = 8080) {
     this.port = port;
@@ -93,8 +95,11 @@ export class MockServer {
 
   private setupWebSocket() {
     this.server.on('upgrade', (request, socket, head) => {
-      const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
+      const url = new URL(request.url || '', `http://${request.headers.host}`);
+      const pathname = url.pathname;
       if (pathname === '/ws') {
+        this.lastWsQuery = url.searchParams;
+        this.lastWsHeaders = request.headers;
         this.wss.handleUpgrade(request, socket, head, (ws) => {
           this.wss.emit('connection', ws, request);
         });
