@@ -13,7 +13,7 @@ import { TestReporter } from './utils/reporter.js';
 import { DiffEngine } from './utils/diff.js';
 import { SwaggerParser } from './utils/swagger.js';
 import { logger } from './utils/logger.js';
-import { isSensitiveKey, readAllowedTextFile, redactHeaders, redactSensitiveData, } from './utils/security.js';
+import { isSensitiveKey, readAllowedTextFile, redactBody, redactHeaders, redactSensitiveData, } from './utils/security.js';
 import jp from 'jsonpath';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1130,7 +1130,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         content: [{ type: 'text', text: `One or both comparison record IDs (${id1}, ${id2}) not found.` }]
                     };
                 }
-                const mdDiff = DiffEngine.renderMarkdownDiff(record1.id, record2.id, record1.responseStatus, record2.responseStatus, record1.durationMs, record2.durationMs, record1.responseBody || '', record2.responseBody || '', format || 'table');
+                const mdDiff = DiffEngine.renderMarkdownDiff(record1.id, record2.id, record1.responseStatus, record2.responseStatus, record1.durationMs, record2.durationMs, 
+                // Redact stored (plaintext) response bodies by default — only history_get
+                // intentionally exposes full responses to the user querying their own record.
+                redactBody(record1.responseBody || ''), redactBody(record2.responseBody || ''), format || 'table');
                 return {
                     content: [{ type: 'text', text: mdDiff }]
                 };

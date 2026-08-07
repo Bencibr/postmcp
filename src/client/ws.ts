@@ -19,6 +19,26 @@ export interface WsConnectionState {
   emitter: EventEmitter;
 }
 
+function interpolate(target: any, variables: Record<string, any>): any {
+  if (typeof target === 'string') {
+    return target.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
+      const trimmed = key.trim();
+      return variables[trimmed] !== undefined ? String(variables[trimmed]) : `{{${trimmed}}}`;
+    });
+  }
+  if (Array.isArray(target)) {
+    return target.map(item => interpolate(item, variables));
+  }
+  if (target !== null && typeof target === 'object') {
+    const output: Record<string, any> = {};
+    for (const [k, v] of Object.entries(target)) {
+      output[k] = interpolate(v, variables);
+    }
+    return output;
+  }
+  return target;
+}
+
 export class WebSocketManager {
   private dbManager: DbManager;
   private connections: Map<string, WsConnectionState> = new Map();
@@ -39,20 +59,17 @@ export class WebSocketManager {
       throw new Error(`Active environment ID ${activeInfo.envId} not found in database.`);
     }
 
-    // 2. Resolve URL (with variable interpolation for baseUrl)
-    let fullUrl = url;
+    // 2. Resolve URL (with variable interpolation for both absolute and relative URLs)
+    const envVars = JSON.parse(env.variables || '{}');
+    let fullUrl = interpolate(url, envVars);
     if (/^https?:\/\//i.test(fullUrl)) {
       // Convert http(s):// to ws(s):// for WebSocket connections
       fullUrl = fullUrl.replace(/^http/i, 'ws');
     } else if (!/^wss?:\/\//i.test(fullUrl)) {
       // Relative path — resolve against active environment's baseUrl
       let baseUrl = env.baseUrl || '';
-      const envVars = JSON.parse(env.variables || '{}');
       // Interpolate variables in baseUrl
-      baseUrl = baseUrl.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
-        const trimmed = key.trim();
-        return envVars[trimmed] !== undefined ? String(envVars[trimmed]) : `{{${trimmed}}}`;
-      });
+      baseUrl = interpolate(baseUrl, envVars);
       if (!baseUrl) {
         throw new Error(`Relative WS URL "${fullUrl}" provided but no baseUrl is configured for the active environment "${activeInfo.envName}" in project "${activeInfo.projectName}"`);
       }
@@ -73,10 +90,10 @@ export class WebSocketManager {
     // Headers injection
     const socketHeaders: Record<string, string> = {};
 
-    const dbHeaders = JSON.parse(env.headers || '{}');
+    const dbHeaders = interpolate(JSON.parse(env.headers || '{}'), envVars);
     Object.assign(socketHeaders, dbHeaders);
 
-    const dbCookies = JSON.parse(env.cookies || '{}');
+    const dbCookies = interpolate(JSON.parse(env.cookies || '{}'), envVars);
     if (Object.keys(dbCookies).length > 0) {
       socketHeaders['Cookie'] = Object.entries(dbCookies)
         .map(([k, v]) => `${k}=${v}`)
@@ -84,7 +101,7 @@ export class WebSocketManager {
     }
 
     if (headers) {
-      Object.assign(socketHeaders, headers);
+      Object.assign(socketHeaders, interpolate(headers, envVars));
     }
 
     // Auth injection
