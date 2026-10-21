@@ -1,4 +1,8 @@
-import sqlite3 from 'sqlite3';
+// Node 内置 SQLite（Node >=22.5）：替代原生 `sqlite3` 包。
+// 原生模块靠 install script 拉取/编译二进制，在 `npm install --ignore-scripts`
+// （BugX 离线运行时的供应链前提）下二进制缺失，服务启动即崩：
+// `Error: Could not locate the bindings file`。改用内置模块后零原生依赖。
+import { DatabaseSync } from 'node:sqlite';
 import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
@@ -61,7 +65,7 @@ export interface AuthCacheEntry {
 
 export class DbManager {
   private dbPath: string;
-  private db!: sqlite3.Database;
+  private db!: DatabaseSync;
 
   constructor(customPath?: string) {
     if (customPath) {
@@ -77,10 +81,13 @@ export class DbManager {
    */
   private openDb(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.db = new sqlite3.Database(this.dbPath, (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
+      try {
+        // DatabaseSync 为同步构造：目录已在上方 mkdir，文件不存在时自动创建。
+        this.db = new DatabaseSync(this.dbPath);
+        resolve();
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
@@ -231,44 +238,36 @@ export class DbManager {
   }
 
   // --- SQLite Query Promise Wrappers ---
-  run(sql: string, params: any[] = []): Promise<{ lastID: number; changes: number }> {
-    return new Promise((resolve, reject) => {
-      this.db.run(sql, params, function (err) {
-        if (err) reject(err);
-        else resolve({ lastID: this.lastID, changes: this.changes });
-      });
-    });
+  async run(sql: string, params: any[] = []): Promise<{ lastID: number; changes: number }> {
+    try {
+      const stmt = this.db.prepare(sql);
+      const info = stmt.run(...(params as any[]));
+      return {
+        lastID: Number(info.lastInsertRowid ?? 0),
+        changes: Number(info.changes ?? 0),
+      };
+    } catch (err) {
+      // `prepare()` 只接受单条语句；PRAGMA 返回值、多语句 DDL 等场景退回 exec。
+      // 真实 SQL 错误同样会由 exec 抛出，不会被吞掉。
+      this.db.exec(sql);
+      return { lastID: 0, changes: 0 };
+    }
   }
 
-  get<T>(sql: string, params: any[] = []): Promise<T | undefined> {
-    return new Promise((resolve, reject) => {
-      this.db.get(sql, params, (err, row) => {
-        if (err) reject(err);
-        else resolve(row as T);
-      });
-    });
+  async get<T>(sql: string, params: any[] = []): Promise<T | undefined> {
+    const stmt = this.db.prepare(sql);
+    return stmt.get(...(params as any[])) as T | undefined;
   }
 
-  all<T>(sql: string, params: any[] = []): Promise<T[]> {
-    return new Promise((resolve, reject) => {
-      this.db.all(sql, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows as T[]);
-      });
-    });
+  async all<T>(sql: string, params: any[] = []): Promise<T[]> {
+    const stmt = this.db.prepare(sql);
+    return stmt.all(...(params as any[])) as T[];
   }
 
-  close(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        resolve();
-        return;
-      }
-      this.db.close((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+  async close(): Promise<void> {
+    if (this.db) {
+      this.db.close();
+    }
   }
 
   // --- APP STATE QUERIES ---

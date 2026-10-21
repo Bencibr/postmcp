@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { createRequire } from 'node:module';
+// 版本单一来源：serverInfo 与启动日志都读 package.json，避免硬编码漂移
+// （实测：包版本 1.0.4 而 serverInfo 仍报 1.1.0）。
+const require = createRequire(import.meta.url);
+const PKG_VERSION = require('../package.json').version;
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'url';
@@ -26,7 +31,7 @@ const swaggerParser = new SwaggerParser(dbManager);
 // 2. Initialize MCP server
 const server = new Server({
     name: 'postmcp',
-    version: '1.1.0',
+    version: PKG_VERSION,
 }, {
     capabilities: {
         tools: {},
@@ -1415,7 +1420,7 @@ async function main() {
     await dbManager.initialize();
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    logger.info('Server', `postmcp v1.1.0 started`);
+    logger.info('Server', `postmcp v${PKG_VERSION} started`);
 }
 main().catch((error) => {
     console.error('Fatal error in main():', error);
